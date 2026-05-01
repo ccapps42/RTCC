@@ -1,0 +1,38 @@
+# Checkpoints and training outputs
+runs/
+
+# Database (binary, tracked separately)
+db/*.db
+db/*.db-wal
+db/*.db-shm
+
+# Validation data (large binary, never retrain on this)
+data/validation/val.parquet
+data/validation/val.sha256
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+*.egg-info/
+dist/
+build/
+
+# Paper figures and tables (generated artifacts)
+paper/figures/
+paper/tables/
+
+# Claude Code local settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

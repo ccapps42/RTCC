@@ -1,0 +1,22 @@
+# 512-dim Flat Grid Overlap smoke test — 100 steps
+# Same geometry as smoke_rtcc but flat (zero-pad) boundary
+model_dim: 512
+head_dim: 64
+n_heads_prelude: 8
+n_heads_recurrent: 8
+n_heads_coda: 4
+mla_latent_dim: 128
+max_seq_len: 128
+total_steps: 100
+checkpoint_every: 50
+eval_every: 100
+warmup_steps: 10
+batch_size: 2
+grad_accum_steps: 2
+hardware: rtx3050
+run_name: dev_512/smoke_flat_grid_overlap
+grid_rows: 32
+grid_cols: 16
+patch_size: 6
+stride: 4
+expert_hidden: 64

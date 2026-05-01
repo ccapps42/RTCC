@@ -1,0 +1,23 @@
+# Benchmark run — RTCC full, 768-dim, ~1B tokens on RTX 3090
+# At curriculum mix: ~4000 tokens/step avg → 250k steps ≈ 1B tokens
+run_name: paper_768/rtcc_benchmark_1b
+hardware: rtx3090
+model_dim: 768
+head_dim: 64
+n_heads_prelude: 16
+n_heads_recurrent: 12
+n_heads_coda: 8
+mla_latent_dim: 192
+max_seq_len: 512
+total_steps: 250000
+checkpoint_every: 1000
+eval_every: 5000
+warmup_steps: 2000
+batch_size: 4
+grad_accum_steps: 8
+seed: 42
+grid_rows: 32
+grid_cols: 24
+patch_size: 10
+stride: 8
+expert_hidden: 256

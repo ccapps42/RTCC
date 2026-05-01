@@ -1,0 +1,23 @@
+# Depth sweep R=8 — RTCC with max_loop_iters=8 (same as rtcc_full)
+run_name: paper_768/rtcc_depth_r8
+hardware: rtx3090
+model_dim: 768
+head_dim: 64
+n_heads_prelude: 16
+n_heads_recurrent: 12
+n_heads_coda: 8
+mla_latent_dim: 192
+max_seq_len: 512
+total_steps: 75000
+checkpoint_every: 1000
+eval_every: 5000
+warmup_steps: 2000
+batch_size: 4
+grad_accum_steps: 8
+seed: 42
+max_loop_iters: 8
+grid_rows: 32
+grid_cols: 24
+patch_size: 10
+stride: 8
+expert_hidden: 256

@@ -1,0 +1,24 @@
+# 512-dim RTCC smoke test — 100 steps, sanity check only
+# Grid: 32x16 = 512. Patch 6x6 stride 4 overlap 2.
+# Experts: 8x4=32, min_axis=4. Private: 2x2=4 dims (11%).
+model_dim: 512
+head_dim: 64
+n_heads_prelude: 8
+n_heads_recurrent: 8
+n_heads_coda: 4
+mla_latent_dim: 128
+max_seq_len: 128
+total_steps: 100
+checkpoint_every: 50
+eval_every: 100
+warmup_steps: 10
+batch_size: 2
+grad_accum_steps: 2
+hardware: rtx3050
+run_name: dev_512/smoke_rtcc
+# RTCC geometry
+grid_rows: 32
+grid_cols: 16
+patch_size: 6
+stride: 4
+expert_hidden: 64

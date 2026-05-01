@@ -1,0 +1,19 @@
+# 512-dim SliceMoE Flat smoke test — 100 steps
+# 512/64 = 8 experts
+model_dim: 512
+head_dim: 64
+n_heads_prelude: 8
+n_heads_recurrent: 8
+n_heads_coda: 4
+mla_latent_dim: 128
+max_seq_len: 128
+total_steps: 100
+checkpoint_every: 50
+eval_every: 100
+warmup_steps: 10
+batch_size: 2
+grad_accum_steps: 2
+hardware: rtx3050
+run_name: dev_512/smoke_slicemoe_flat
+slice_dim: 64
+expert_hidden: 128

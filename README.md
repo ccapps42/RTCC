@@ -119,19 +119,41 @@ The ratio of private to total expert dimensions is a key architectural hyperpara
 
 ## Relationship to CART (Paper 1)
 
-RTCC is Paper 2 in a two-paper sequence. **CART** ([ccapps42/CART](https://github.com/ccapps42/CART)) establishes:
+RTCC is Paper 2 in a two-paper sequence. **CART** ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026) establishes the recurrent framework through original ablation experiments:
 
-- The recurrent-depth transformer framework
-- LTI injection for loop stability (from OpenMythos / Claude Mythos)
+**Borrowed components assembled in CART:**
+- LTI injection for loop stability (formulation from OpenMythos / Claude Mythos)
 - Hyper-connections at loop boundaries (from Hyperloop, arXiv 2604.21254)
-- The 4+6+1 prelude/recurrent/coda layer balance (original ablation finding)
-- The phased sequence-length and loop-count training curriculum
+- MLA attention (from DeepSeek-V2, arXiv 2405.04434)
+- RoPE, RMSNorm, SwiGLU, weight tying (standard components)
 
-RTCC cites CART for all of the above and contributes only the Toroidal Sheet MoE. This makes the paper's claim precise: *replacing the FFN with TS-MoE improves performance, and here is the mechanism.*
+**Original findings from CART ablations:**
+- **4+6+1 prelude/recurrent/coda balance** — empirically optimal at both dim=256 and dim=768; all prior RDT work uses symmetric configs
+- **Asymmetric MLA head counts** — 16-head prelude, 12-head recurrent core, 8-head coda
+- **R=8 loop ceiling** — validated as the optimal training ceiling
+- **Phased sequence-length and loop-count curriculum** — critical for stable training, validated across four phases
+
+RTCC inherits all of the above from CART without modification and contributes exactly one change: the feed-forward layer in the recurrent core is replaced by the Toroidal Sheet MoE. This makes the paper's claim precise and fully controlled.
 
 ---
 
 ## Novelty
+
+RTCC makes two distinct original contributions:
+
+### Contribution 1: The CART Framework (established in Paper 1)
+
+The recurrent framework underlying RTCC was designed and validated through original ablation experiments in CART ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026). Specific original findings include:
+
+- **4+6+1 layer balance** — asymmetric prelude/recurrent/coda configuration, empirically optimal across dim=256 and dim=768; all prior published RDT work uses symmetric configs
+- **Asymmetric MLA head counts** — 16-head prelude, 12-head recurrent core, 8-head coda; heavier prelude conditions the signal, lighter coda is sufficient for output projection
+- **R=8 loop ceiling** — validated as optimal training ceiling; lower ceilings constrain low-loop performance, higher ceilings degrade it
+- **Phased curriculum** — sequence length and loop count ramped jointly across four phases; independently validated as critical for stable training
+- **Component assembly** — LTI injection (from OpenMythos), hyper-connections (from Hyperloop), MLA (from DeepSeek-V2), RoPE, RMSNorm, SwiGLU assembled into a coherent architecture and validated at scale
+
+These findings are the contribution of CART. RTCC inherits this framework exactly, with no modifications, making the paper's claim precise: *the ToroidalMoE is the only variable.*
+
+### Contribution 2: The Toroidal Sheet MoE (this work)
 
 To our knowledge, RTCC is the first architecture to:
 
@@ -140,7 +162,8 @@ To our knowledge, RTCC is the first architecture to:
 3. Use a **toroidal boundary condition** on the embedding grid — eliminating edge effects and making every expert position structurally identical
 4. Achieve **cortical column structure as an emergent property** of combining 2D toroidal expert layout with recurrent depth — no biological structure is explicitly programmed
 
-Closest prior work:
+### Closest Prior Work
+
 - **SliceMoE** (Vejendla, 2024) — dimensional partitioning without overlap, without topology, without position-fixed experts
 - **MoGE** (Kang et al., 2025) — 2D structure applied to routing inputs, not dimensional ownership
 

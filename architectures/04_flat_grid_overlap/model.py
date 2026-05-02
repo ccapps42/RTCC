@@ -28,7 +28,6 @@ FlatGridMoE = _fg.FlatGridMoE
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 from shared.components.norm import RMSNorm
 from shared.components.attention import MLASelfAttention
@@ -132,10 +131,7 @@ class FlatGridModel(nn.Module):
         for r in range(n_loops):
             h_input = self.hyper.combine(buffer)
             h_input = self.lie(h_input, r)
-            if self.training:
-                block_out = grad_checkpoint(self.recurrent, h_input, use_reentrant=False)
-            else:
-                block_out = self.recurrent(h_input)
+            block_out = self.recurrent(h_input)
             h = self.lti(h_input, e, block_out)
             buffer = self.hyper.update_buffer(buffer, h)
 

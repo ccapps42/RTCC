@@ -1,0 +1,19 @@
+# 512-dim SliceMoE Flat dev run — ~100M tokens
+# 512/64 = 8 experts
+model_dim: 512
+head_dim: 64
+n_heads_prelude: 8
+n_heads_recurrent: 8
+n_heads_coda: 4
+mla_latent_dim: 128
+max_seq_len: 512
+total_steps: 37500
+checkpoint_every: 1000
+eval_every: 5000
+warmup_steps: 1000
+batch_size: 4
+grad_accum_steps: 8
+hardware: rtx3050
+run_name: dev_512/dev_slicemoe_flat
+slice_dim: 64
+expert_hidden: 128

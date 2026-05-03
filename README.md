@@ -124,11 +124,21 @@ The ratio of private to total expert dimensions is a key architectural hyperpara
 
 The toroidal grid places a hard constraint on which model dimensions are usable: a stride `S` is only valid if it divides **both** grid axes cleanly. This means the choice of `d` determines the entire patch/stride design space, and most values of `d` have very few valid configurations.
 
-**Two additional constraints apply:**
+**Three additional constraints apply:**
 
 1. **Head dimension.** For efficient attention, `d / n_heads` should be a power of 2. This strongly favors `d` values with large powers-of-2 factors (e.g. 768 = 2⁸ × 3, giving head\_dim = 64 with 12 heads).
 
 2. **Stride threshold.** Strides below 6 produce private cores of 9 dimensions or fewer (a 3×3 region), which are too small for meaningful expert specialization. Only configurations with stride ≥ 6 are architecturally interesting.
+
+3. **Minimum narrow dimension.** Every axis of the expert grid must have at least **3 experts**. This is a hard topological requirement of the toroidal communication mechanism, not a soft preference.
+
+   On a torus, each expert's shared border dims accumulate gradient from its neighbors on all four sides. For this lateral communication to be meaningful, the neighbors must be **distinct**: every expert must have a unique neighbor to its left, a unique neighbor to its right, a unique neighbor above, and a unique neighbor below — all four different from each other and different from the expert itself.
+
+   With 2 experts on an axis, the toroidal wrap makes each expert its own second-order neighbor: expert A's left neighbor is B, and expert A's right neighbor is also B. The shared border dims then receive gradient from the same source in both directions, providing no lateral diversity — the communication degenerates to a self-loop through one intermediary. With 3 experts, expert A has B on one side and C on the other — four unique neighbors across both axes.
+
+   This constraint eliminates any configuration where either grid axis has fewer than 3 expert positions, i.e. where `min(rows/S, cols/S) < 3`.
+
+   Note that at 768-dim, stride 8 gives a 4×3 layout — the short axis sits exactly at the minimum. The constraint is satisfied but not comfortably. Larger dimensions provide more headroom above the floor on both axes simultaneously.
 
 #### Why 768
 
@@ -166,24 +176,45 @@ GCD(36, 36) = 36. Valid strides ≥ 6: **6, 9, 12**. Square grid — every exper
 
 ---
 
-**d = 1944 — 36×54 (rectangular 2:3 grid) — richer stride variety**
+**d = 1944 — 36×54 (rectangular 2:3 grid) — superseded by 2592**
 
-GCD(36, 54) = 18. Valid strides ≥ 6: **6, 9, 18** — the largest set of any dimension in this range. Head dim: 1944 / 12 = 162 (not a power of 2).
+GCD(36, 54) = 18. Valid strides ≥ 6: **6, 9, 18**. Head dim: 1944 / 12 = 162 (not a power of 2).
 
-| Stride | Overlap | Patch | Grid layout | Experts | Total dims | Private | Shared | Privacy% |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 6 | 1-cell | 7×7 | 6×9 | 54 | 49 | 25 | 24 | 51% |
-| 6 | 2-cell | 8×8 | 6×9 | 54 | 64 | 16 | 48 | 25% |
-| **9** | **1-cell** | **10×10** | **4×6** | **24** | **100** | **64** | **36** | **64%** ★ |
-| 9 | 2-cell | 11×11 | 4×6 | 24 | 121 | 49 | 72 | 40% |
-| 18 | 1-cell | 19×19 | 2×3 | 6 | 361 | 289 | 72 | 80% |
-| 18 | 2-cell | 20×20 | 2×3 | 6 | 400 | 256 | 144 | 64% |
+The minimum narrow-dimension constraint (≥ 3 experts per axis on the toroidal sheet, so no expert wraps around to become its own neighbor) eliminates stride 18 here: the 2×3 layout has a narrow dimension of 2. This reduces 1944 to only 2 valid strides, which is insufficient for a meaningful privacy sweep. 1944 is superseded by 2592, which adds stride 12 and achieves 3 valid strides at smaller d.
 
-★ Stride 9 preserves the 100-dim / 64-private biological match, but the expert layout is rectangular (4×6) — experts on the short axis have different neighbor geometry than those on the long axis, weakening the structural equivalence argument. 1944 is preferred over 1296 only when the wider privacy sweep range (reaching 80% at stride 18) is experimentally valuable.
+| Stride | Overlap | Patch | Layout | Narrow | Experts | Total dims | Private | Privacy% | Valid |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 1-cell | 7×7 | 6×9 | 6 | 54 | 49 | 25 | 51% | ✓ |
+| 6 | 2-cell | 8×8 | 6×9 | 6 | 54 | 64 | 16 | 25% | ✓ |
+| **9** | **1-cell** | **10×10** | **4×6** | **4** | **24** | **100** | **64** | **64%** ★ | **✓** |
+| 9 | 2-cell | 11×11 | 4×6 | 4 | 24 | 121 | 49 | 40% | ✓ |
+| ~~18~~ | ~~1-cell~~ | ~~19×19~~ | ~~2×3~~ | ~~2~~ | ~~6~~ | ~~361~~ | ~~289~~ | ~~80%~~ | ✗ |
+| ~~18~~ | ~~2-cell~~ | ~~20×20~~ | ~~2×3~~ | ~~2~~ | ~~6~~ | ~~400~~ | ~~256~~ | ~~64%~~ | ✗ |
+
+★ Biological match preserved at stride 9.
 
 ---
 
-**d = 2916 — 54×54 (square grid) — recommended for large-scale follow-up**
+**d = 2592 — 36×72 (rectangular 2:1 grid) — richest valid stride set**
+
+GCD(36, 72) = 36. Valid strides ≥ 6 after narrow constraint: **6, 9, 12**. Stride 18 eliminated (2×4, narrow=2). Head dim: 2592 / 12 = 216 (not a power of 2). The unique property of 2592 is stride 12, which no other candidate supports — giving a privacy range from 51% up to 72% at the primary (1-cell) config that no other candidate reaches with 3+ experts on both axes.
+
+| Stride | Overlap | Patch | Layout | Narrow | Experts | Total dims | Private | Privacy% | Valid |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 1-cell | 7×7 | 6×12 | 6 | 72 | 49 | 25 | 51% | ✓ |
+| 6 | 2-cell | 8×8 | 6×12 | 6 | 72 | 64 | 16 | 25% | ✓ |
+| **9** | **1-cell** | **10×10** | **4×8** | **4** | **32** | **100** | **64** | **64%** ★ | **✓** |
+| 9 | 2-cell | 11×11 | 4×8 | 4 | 32 | 121 | 49 | 40% | ✓ |
+| 12 | 1-cell | 13×13 | 3×6 | 3 | 18 | 169 | 121 | 72% | ✓ |
+| 12 | 2-cell | 14×14 | 3×6 | 3 | 18 | 196 | 100 | 51% | ✓ |
+| ~~18~~ | ~~1-cell~~ | ~~19×19~~ | ~~2×4~~ | ~~2~~ | ~~8~~ | ~~361~~ | ~~289~~ | ~~80%~~ | ✗ |
+| ~~18~~ | ~~2-cell~~ | ~~20×20~~ | ~~2×4~~ | ~~2~~ | ~~8~~ | ~~400~~ | ~~256~~ | ~~64%~~ | ✗ |
+
+★ Biological match preserved at stride 9.
+
+---
+
+
 
 GCD(54, 54) = 54. Valid strides ≥ 6: **6, 9, 18**. Square grid — every expert position is structurally identical. Head dim: 2916 / 12 = 243 (not a power of 2; a separate attention projection is required, as with 1296).
 
@@ -200,35 +231,57 @@ GCD(54, 54) = 54. Valid strides ≥ 6: **6, 9, 18**. Square grid — every exper
 
 2916 is architecturally notable for a property no smaller candidate possesses: **every useful stride produces a square expert layout on a square toroidal sheet**. At stride 6: 9×9 = 81 experts. At stride 9: 6×6 = 36 experts. At stride 18: 3×3 = 9 experts. Full structural equivalence is maintained across the entire privacy sweep, not just at the primary configuration.
 
-The sequence of square-grid candidates also follows a clean scaling pattern:
+---
 
-| d | Grid | Experts at stride 9 | Expert layout | Useful strides ≥ 6 |
-| --- | --- | --- | --- | --- |
-| 768 | 32×24 | — | — | stride 8 only |
-| 1296 | 36×36 | 16 | 4×4 sq | 6, 9, 12 |
-| 2025 | 45×45 | 25 | 5×5 sq | 9, 15 only |
-| **2916** | **54×54** | **36** | **6×6 sq** | **6, 9, 18** |
+**d = 3888 — 54×72 (rectangular 4:3 grid) — largest valid expert counts, all strides pass**
 
-Grid axes grow as multiples of 9 (36 → 45 → 54), and expert counts at stride 9 grow as perfect squares (4² → 5² → 6²). This is a clean geometric scaling law: each step up in grid size adds one expert per axis at the biological-match stride. 2025 is omitted from practical consideration because it supports only two useful strides (9 and 15), making a meaningful privacy sweep impossible at that scale. 2916 restores a full three-stride sweep.
+GCD(54, 72) = 18. Valid strides ≥ 6 after narrow constraint: **6, 9, 18** — all pass with no eliminations. Head dim: 3888 / 12 = 324 (not a power of 2). 3888 is the only candidate where every stride ≥ 6 meets the narrow-dimension constraint without exception. It also produces the highest expert counts of any candidate at each stride level.
+
+| Stride | Overlap | Patch | Layout | Narrow | Experts | Total dims | Private | Privacy% | Valid |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 1-cell | 7×7 | 9×12 | 9 | 108 | 49 | 25 | 51% | ✓ |
+| 6 | 2-cell | 8×8 | 9×12 | 9 | 108 | 64 | 16 | 25% | ✓ |
+| **9** | **1-cell** | **10×10** | **6×8** | **6** | **48** | **100** | **64** | **64%** ★ | **✓** |
+| 9 | 2-cell | 11×11 | 6×8 | 6 | 48 | 121 | 49 | 40% | ✓ |
+| 18 | 1-cell | 19×19 | 3×4 | 3 | 12 | 361 | 289 | 80% | ✓ |
+| 18 | 2-cell | 20×20 | 3×4 | 3 | 12 | 400 | 256 | 64% | ✓ |
+
+★ Biological match preserved at stride 9.
+
+---
+
+The square-grid candidates follow a clean geometric scaling law: grid axes grow as multiples of 9 (36 → 45 → 54), and expert counts at stride 9 grow as perfect squares (4² → 5² → 6²). Each step adds one expert per axis at the biological-match stride. 2025 is omitted from practical consideration because it supports only two useful strides (9 and 15) after applying the narrow constraint, making a meaningful privacy sweep impossible.
 
 #### Dimension Comparison Summary
 
-| d | Grid | Square | Head dim | Stride 9 | Useful strides ≥ 6 | Experts at stride 9 | All layouts square |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **768** | 32×24 | No | 64 ✓ | No | 1 (stride 8) | — | — |
-| **1296** | 36×36 | **Yes** | 108 | **Yes** | 3 (6, 9, 12) | 4×4 = 16 | No (stride 12 → 3×3 ✓, stride 6 → 6×6 ✓, stride 9 → 4×4 ✓) |
-| 1728 | 36×48 | No | 144 | No | 2 (6, 12) | — | No |
-| **1944** | 36×54 | No | 162 | **Yes** | 3 (6, 9, 18) | 4×6 = 24 rect | No |
-| 2025 | 45×45 | Yes | 169 | Yes | 2 (9, 15) | 5×5 = 25 | Yes — but only 2 strides |
-| **2916** | **54×54** | **Yes** | **243** | **Yes** | **3 (6, 9, 18)** | **6×6 = 36** | **Yes ★** |
+All candidates after applying the minimum narrow-dimension constraint (≥ 3 experts per axis). Invalid configs excluded. For each stride the entry shows: **experts (layout) @ 1-cell% / 2-cell%**. Biological-match stride (9 or 8 for 768) marked ★.
 
-★ 2916 is the first dimension where the toroidal sheet is square, the biological-match config is available, and every useful stride produces a square expert layout — simultaneously.
+| d | Grid | Head /12 | Stride 6 | Stride 8/9 ★ | Stride 12 | Stride 18 | Valid configs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **768** | 32×24 | **64 ✓** | — | 12 (4×3) @ 60%/36% | — | — | 2 |
+| **1296** | 36×36 | 108 | 36 (6×6) @ 51%/25% | 16 (4×4) @ 64%/40% | 9 (3×3) @ 72%/51% | — | 6 |
+| ~~1728~~ | ~~36×48~~ | ~~144~~ | ~~no stride 9~~ | ~~—~~ | — | — | — |
+| 1944 | 36×54 | 162 | 54 (6×9) @ 51%/25% | 24 (4×6) @ 64%/40% | — | ~~narrow=2~~ | 4 |
+| **2592** | **36×72** | **216** | **72 (6×12) @ 51%/25%** | **32 (4×8) @ 64%/40%** | **18 (3×6) @ 72%/51%** | ~~narrow=2~~ | **6** |
+| **2916** | **54×54** | **243** | **81 (9×9) @ 51%/25%** | **36 (6×6) @ 64%/40%** | — | **9 (3×3) @ 80%/64%** | **6** |
+| **3888** | **54×72** | **324** | **108 (9×12) @ 51%/25%** | **48 (6×8) @ 64%/40%** | — | **12 (3×4) @ 80%/64%** | **6** |
+
+**Notes:**
+- 1728 eliminated — no stride 9 available.
+- 1944 reduced to 4 valid configs after stride 18 eliminated (narrow=2). Superseded by 2592.
+- 2592 is the only candidate with stride 12, adding an intermediate 18-expert config at 72% privacy unavailable elsewhere.
+- 2592 and 2916 both reach 6 valid configs but through different strides — 2592 via stride 12, 2916 via stride 18.
+- 3888 is the only candidate where every stride ≥ 6 passes the narrow constraint with no eliminations. Also has the highest expert counts at every stride level.
 
 ---
 
 ## Relationship to CART (Paper 1)
 
-RTCC is Paper 2 in a two-paper sequence. **CART** ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026) establishes the recurrent framework through original ablation experiments:
+RTCC is Paper 2 in a two-paper sequence. **CART** ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026) establishes the recurrent framework through original ablation experiments.
+
+The general direction of increasing effective depth through recurrence is supported by recent independent work. Oncescu et al. (arXiv 2604.21215, 2026) introduce a structurally distinct recurrent transformer in which each layer attends to KV pairs computed from its own outputs rather than the previous layer — a per-layer self-referential mechanism that differs from CART's loop-based weight sharing. Their empirical results show cross-entropy improvement over parameter-matched baselines at 150M–300M parameters on C4, independently corroborating that recurrent depth is a productive direction at scales comparable to CART's experiments. Their theoretical proofs, however, concern their specific architecture and do not directly cover CART's mechanism.
+
+CART's recurrent core is architecturally distinct: the same block of layers is executed R times with fully shared weights, conditioned per loop by a sinusoidal loop-index embedding (LIE), stabilized by LTI injection, and blended across iterations by hyper-connections. This design, and the specific empirical findings below, are original to CART.
 
 **Borrowed components assembled in CART:**
 
@@ -255,13 +308,13 @@ RTCC makes two distinct original contributions:
 
 ### Contribution 1: The CART Framework (established in Paper 1)
 
-The recurrent framework underlying RTCC was designed and validated through original ablation experiments in CART ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026). Specific original findings include:
+The recurrent framework underlying RTCC was designed and validated through original ablation experiments in CART ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026). CART's loop-based weight-sharing architecture — in which the same block executes R times with shared weights, conditioned per loop by LIE, stabilized by LTI injection, and blended across iterations by hyper-connections — is architecturally distinct from prior recurrent transformer work including Oncescu et al. (arXiv 2604.21215, 2026), whose per-layer KV self-reference mechanism is a different approach to the same general goal of increasing effective depth. CART's original contributions are:
 
 * **4+6+1 layer balance** — asymmetric prelude/recurrent/coda configuration, empirically optimal across dim=256 and dim=768; all prior published RDT work uses symmetric configs
 * **Asymmetric MLA head counts** — 16-head prelude, 12-head recurrent core, 8-head coda; heavier prelude conditions the signal, lighter coda is sufficient for output projection
 * **R=8 loop ceiling** — validated as optimal training ceiling; lower ceilings constrain low-loop performance, higher ceilings degrade it
 * **Phased curriculum** — sequence length and loop count ramped jointly across four phases; independently validated as critical for stable training
-* **Component assembly** — LTI injection (Parcae), loop index embedding (OpenMythos), hyper-connections (Hyperloop Transformer), MLA (DeepSeek-V2), RoPE, RMSNorm, SwiGLU assembled into a coherent architecture and validated at scale
+* **Component assembly** — LTI injection (Parcae), loop index embedding (OpenMythos), hyper-connections (Hyperloop Transformer), MLA (DeepSeek-V2), RoPE, RMSNorm, SwiGLU assembled into a coherent loop-based architecture and validated at scale
 
 These findings are the contribution of CART. RTCC inherits this framework exactly, with no modifications, making the paper's claim precise: *the ToroidalMoE is the only variable.*
 
@@ -424,7 +477,7 @@ Also cite CART (Paper 1):
 
 * Geiping et al., *Huginn* (2025) — recurrent depth at scale
 * Hyperloop Transformers, arXiv 2604.21254 (2026) — hyper-connections
-* Oncescu et al., arXiv 2604.21215 (2026) — recurrent transformer theory
+* Oncescu et al., arXiv 2604.21215 (2026) — a structurally distinct recurrent transformer using per-layer KV self-reference (different mechanism from CART's loop-based weight sharing); provides independent empirical evidence that recurrent depth improves cross-entropy over parameter-matched baselines at 150M–300M scale on C4
 * Gomez, *OpenMythos* (2026) — loop index embedding (LIE)
 * Prairie et al., *Parcae* (2026) — LTI injection, spectral radius stability
 * Dai et al., *DeepSeek-V2*, arXiv 2405.04434 (2024) — MLA attention

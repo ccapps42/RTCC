@@ -14,7 +14,7 @@ RTCC is a language model architecture that replaces the feed-forward layer in a 
 * The model's embedding dimensions are reshaped into a **2D toroidal grid**
 * Fixed-position experts process **overlapping patches** of that grid
 * Shared border dimensions between adjacent experts create **implicit inter-expert communication** through gradient flow — no explicit lateral connections needed
-* Recurrent depth stacks these toroidal sheets into **cortical columns**, one column per expert position, across all loop iterations
+* Recurrent depth nests these toroidal sheets into **cortical columns**, one column per expert position, across all loop iterations
 
 The result is an architecture with a precise structural analog to the neocortical minicolumn — the fundamental computational unit of the mammalian brain.
 

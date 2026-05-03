@@ -108,19 +108,19 @@ box(ax, CX, y, BW, BH, 'hyper.combine(buffer)',  C_HYPER,
 y -= BH/2 + GAP; arr(ax, CX, y+GAP-0.02, y+0.02); y -= BH/2
 
 box(ax, CX, y, BW, BH, 'Loop Index Embedding (LIE)', C_LIE,
-    sublabel='Add sinusoidal loop-index embedding to h_input')
+    sublabel='Sinusoidal loop-index encoding → projected to model_dim\n→ added to h_input')
 y -= BH/2 + GAP; arr(ax, CX, y+GAP-0.02, y+0.02); y -= BH/2
 
 box(ax, CX, y, BW, BH, 'Multi-head Latent Attention', C_ATTN,
-    sublabel='RMSNorm → MLA  (residual add)')
+    sublabel='RMSNorm → MLA self-attention  (residual add)')
 y -= BH/2 + GAP; arr(ax, CX, y+GAP-0.02, y+0.02); y -= BH/2
 
 box(ax, CX, y, BW, BHT, 'Toroidal Expert Block', C_EXPERT,
-    sublabel='RMSNorm → pad → unfold → per-expert SwiGLU\n→ overlap-add fold  (residual add)')
+    sublabel='RMSNorm → circular (toroidal) pad → unfold → per-expert SwiGLU\n→ overlap-add fold  (residual add)')
 y -= BHT/2 + GAP; arr(ax, CX, y+GAP-0.02, y+0.02); y -= BH/2
 
 box(ax, CX, y, BW, BH, 'Linear Time-Invariant Update (LTI)', C_LTI,
-    sublabel='h = sigmoid(A)·h_input + B·e + block_out')
+    sublabel='h = sigmoid(A)·h_input + B·e + transformer_out')
 # Dashed line from anchor e down to LTI
 lti_y = y
 ax.plot([anx, anx], [any_-0.38, lti_y+0.15], color='#885500', lw=1.2,
@@ -131,7 +131,7 @@ ax.annotate('', xy=(CX+BW/2+pad+0.08, lti_y), xytext=(anx, lti_y),
 y -= BH/2 + GAP; arr(ax, CX, y+GAP-0.02, y+0.02); y -= BH/2
 
 box(ax, CX, y, BW, BH, 'hyper.update_buffer(buffer, h)', C_HYPER,
-    sublabel='Write h into hyper-connection buffer for next iteration')
+    sublabel='Push h to front of ring buffer, drop oldest state')
 loop_bot = y - BH/2 - GAP*0.35
 
 section_box(ax, CX, loop_top, loop_bot, BW, '#f8f4ff', '#7755aa', '×R  Recurrent Core', '#7755aa')

@@ -120,6 +120,110 @@ The ratio of private to total expert dimensions is a key architectural hyperpara
 
 \* Controlled pairs at the same expert count isolate the effect of overlap width independently of expert count.
 
+### Grid Dimension Selection
+
+The toroidal grid places a hard constraint on which model dimensions are usable: a stride `S` is only valid if it divides **both** grid axes cleanly. This means the choice of `d` determines the entire patch/stride design space, and most values of `d` have very few valid configurations.
+
+**Two additional constraints apply:**
+
+1. **Head dimension.** For efficient attention, `d / n_heads` should be a power of 2. This strongly favors `d` values with large powers-of-2 factors (e.g. 768 = 2⁸ × 3, giving head\_dim = 64 with 12 heads).
+
+2. **Stride threshold.** Strides below 6 produce private cores of 9 dimensions or fewer (a 3×3 region), which are too small for meaningful expert specialization. Only configurations with stride ≥ 6 are architecturally interesting.
+
+#### Why 768
+
+768 = 32 × 24. GCD(32, 24) = 8, giving valid strides {2, 4, 8}. After applying the stride ≥ 6 threshold, only **stride 8** remains — which is exactly the paper's primary configuration. The dimension is chosen precisely because it concentrates all the useful design space into one well-characterized stride, and because 768 / 12 = 64 satisfies the power-of-2 head\_dim constraint cleanly.
+
+| Stride | Overlap | Patch | Experts | Total dims | Private | Shared | Privacy% |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 8 | 1-cell | 9×9 | 4×3 = 12 | 81 | 49 | 32 | 60% |
+| **8** | **2-cell** | **10×10** | **4×3 = 12** | **100** | **36** | **64** | **36%** ← primary |
+
+The 10×10 patch at stride 8 also produces a notable biological correspondence: **100 dimensions per expert** matching the ~100-neuron count of a biological cortical minicolumn. This correspondence was not designed in — it is a consequence of the patch geometry.
+
+#### Candidates Above 768
+
+Larger experiments require a dimension with stride 9 available (to preserve the 10×10 / 100-dim biological match) and at least three useful stride ≥ 6 configurations for a meaningful privacy sweep. A systematic search over all `d` from 769 to 2200 where both grid axes are divisible by 9 identifies two candidates:
+
+---
+
+**d = 1296 — 36×36 (square grid) — recommended for follow-up**
+
+GCD(36, 36) = 36. Valid strides ≥ 6: **6, 9, 12**. Square grid — every expert position is structurally identical, full toroidal symmetry. Head dim: 1296 / 12 = 108 (not a power of 2; a separate attention projection is required).
+
+| Stride | Overlap | Patch | Experts | Total dims | Private | Shared | Privacy% |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 1-cell | 7×7 | 6×6 = 36 | 49 | 25 | 24 | 51% |
+| 6 | 2-cell | 8×8 | 6×6 = 36 | 64 | 16 | 48 | 25% |
+| **9** | **1-cell** | **10×10** | **4×4 = 16** | **100** | **64** | **36** | **64%** ★ |
+| 9 | 2-cell | 11×11 | 4×4 = 16 | 121 | 49 | 72 | 40% |
+| 12 | 1-cell | 13×13 | 3×3 = 9 | 169 | 121 | 48 | 72% |
+| 12 | 2-cell | 14×14 | 3×3 = 9 | 196 | 100 | 96 | 51% |
+
+★ Stride 9 with 1-cell overlap reproduces the biological match exactly: 10×10 patch, 100 dims per expert, 64 private — and the 4×4 = 16 expert layout on a square grid preserves full toroidal symmetry.
+
+1296 was chosen over 1728 (36×48), the next multiple-of-81 value, because 1728 does not support stride 9 — 9 divides 36 but not 48. This eliminates the biological match configuration entirely at 1728.
+
+---
+
+**d = 1944 — 36×54 (rectangular 2:3 grid) — richer stride variety**
+
+GCD(36, 54) = 18. Valid strides ≥ 6: **6, 9, 18** — the largest set of any dimension in this range. Head dim: 1944 / 12 = 162 (not a power of 2).
+
+| Stride | Overlap | Patch | Grid layout | Experts | Total dims | Private | Shared | Privacy% |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 1-cell | 7×7 | 6×9 | 54 | 49 | 25 | 24 | 51% |
+| 6 | 2-cell | 8×8 | 6×9 | 54 | 64 | 16 | 48 | 25% |
+| **9** | **1-cell** | **10×10** | **4×6** | **24** | **100** | **64** | **36** | **64%** ★ |
+| 9 | 2-cell | 11×11 | 4×6 | 24 | 121 | 49 | 72 | 40% |
+| 18 | 1-cell | 19×19 | 2×3 | 6 | 361 | 289 | 72 | 80% |
+| 18 | 2-cell | 20×20 | 2×3 | 6 | 400 | 256 | 144 | 64% |
+
+★ Stride 9 preserves the 100-dim / 64-private biological match, but the expert layout is rectangular (4×6) — experts on the short axis have different neighbor geometry than those on the long axis, weakening the structural equivalence argument. 1944 is preferred over 1296 only when the wider privacy sweep range (reaching 80% at stride 18) is experimentally valuable.
+
+---
+
+**d = 2916 — 54×54 (square grid) — recommended for large-scale follow-up**
+
+GCD(54, 54) = 54. Valid strides ≥ 6: **6, 9, 18**. Square grid — every expert position is structurally identical. Head dim: 2916 / 12 = 243 (not a power of 2; a separate attention projection is required, as with 1296).
+
+| Stride | Overlap | Patch | Expert layout | Experts | Total dims | Private | Shared | Privacy% |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 1-cell | 7×7 | 9×9 sq | 81 | 49 | 25 | 24 | 51% |
+| 6 | 2-cell | 8×8 | 9×9 sq | 81 | 64 | 16 | 48 | 25% |
+| **9** | **1-cell** | **10×10** | **6×6 sq** | **36** | **100** | **64** | **36** | **64%** ★ |
+| 9 | 2-cell | 11×11 | 6×6 sq | 36 | 121 | 49 | 72 | 40% |
+| 18 | 1-cell | 19×19 | 3×3 sq | 9 | 361 | 289 | 72 | 80% |
+| 18 | 2-cell | 20×20 | 3×3 sq | 9 | 400 | 256 | 144 | 64% |
+
+★ Stride 9 with 1-cell overlap reproduces the biological match exactly: 10×10 patch, 100 dims per expert, 64 private. The expert layout is 6×6 = 36 experts in a square grid — every expert position on the toroidal sheet is structurally identical at every useful stride simultaneously.
+
+2916 is architecturally notable for a property no smaller candidate possesses: **every useful stride produces a square expert layout on a square toroidal sheet**. At stride 6: 9×9 = 81 experts. At stride 9: 6×6 = 36 experts. At stride 18: 3×3 = 9 experts. Full structural equivalence is maintained across the entire privacy sweep, not just at the primary configuration.
+
+The sequence of square-grid candidates also follows a clean scaling pattern:
+
+| d | Grid | Experts at stride 9 | Expert layout | Useful strides ≥ 6 |
+| --- | --- | --- | --- | --- |
+| 768 | 32×24 | — | — | stride 8 only |
+| 1296 | 36×36 | 16 | 4×4 sq | 6, 9, 12 |
+| 2025 | 45×45 | 25 | 5×5 sq | 9, 15 only |
+| **2916** | **54×54** | **36** | **6×6 sq** | **6, 9, 18** |
+
+Grid axes grow as multiples of 9 (36 → 45 → 54), and expert counts at stride 9 grow as perfect squares (4² → 5² → 6²). This is a clean geometric scaling law: each step up in grid size adds one expert per axis at the biological-match stride. 2025 is omitted from practical consideration because it supports only two useful strides (9 and 15), making a meaningful privacy sweep impossible at that scale. 2916 restores a full three-stride sweep.
+
+#### Dimension Comparison Summary
+
+| d | Grid | Square | Head dim | Stride 9 | Useful strides ≥ 6 | Experts at stride 9 | All layouts square |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **768** | 32×24 | No | 64 ✓ | No | 1 (stride 8) | — | — |
+| **1296** | 36×36 | **Yes** | 108 | **Yes** | 3 (6, 9, 12) | 4×4 = 16 | No (stride 12 → 3×3 ✓, stride 6 → 6×6 ✓, stride 9 → 4×4 ✓) |
+| 1728 | 36×48 | No | 144 | No | 2 (6, 12) | — | No |
+| **1944** | 36×54 | No | 162 | **Yes** | 3 (6, 9, 18) | 4×6 = 24 rect | No |
+| 2025 | 45×45 | Yes | 169 | Yes | 2 (9, 15) | 5×5 = 25 | Yes — but only 2 strides |
+| **2916** | **54×54** | **Yes** | **243** | **Yes** | **3 (6, 9, 18)** | **6×6 = 36** | **Yes ★** |
+
+★ 2916 is the first dimension where the toroidal sheet is square, the biological-match config is available, and every useful stride produces a square expert layout — simultaneously.
+
 ---
 
 ## Relationship to CART (Paper 1)

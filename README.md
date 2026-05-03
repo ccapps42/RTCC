@@ -1,9 +1,9 @@
 # Recurrent Toroidal Cortical Columns (RTCC)
 
-**Paper:** *Recurrent Toroidal Cortical Columns: A Neocortically-Inspired Architecture for Efficient Language Modeling*  
-**Author:** Chad Capps ([@ccapps42](https://github.com/ccapps42))  
-**Status:** Experiments in progress — paper forthcoming  
-**License:** MIT  
+**Paper:** *Recurrent Toroidal Cortical Columns: A Neocortically-Inspired Architecture for Efficient Language Modeling*
+**Author:** Chad Capps ([@ccapps42](https://github.com/ccapps42))
+**Status:** Experiments in progress — paper forthcoming
+**License:** MIT
 
 ---
 
@@ -11,10 +11,10 @@
 
 RTCC is a language model architecture that replaces the feed-forward layer in a recurrent-depth transformer with a **Toroidal Sheet Mixture of Experts (TS-MoE)** — a spatially organized expert system in which:
 
-- The model's embedding dimensions are reshaped into a **2D toroidal grid**
-- Fixed-position experts process **overlapping patches** of that grid
-- Shared border dimensions between adjacent experts create **implicit inter-expert communication** through gradient flow — no explicit lateral connections needed
-- Recurrent depth stacks these toroidal sheets into **cortical columns**, one column per expert position, across all loop iterations
+* The model's embedding dimensions are reshaped into a **2D toroidal grid**
+* Fixed-position experts process **overlapping patches** of that grid
+* Shared border dimensions between adjacent experts create **implicit inter-expert communication** through gradient flow — no explicit lateral connections needed
+* Recurrent depth stacks these toroidal sheets into **cortical columns**, one column per expert position, across all loop iterations
 
 The result is an architecture with a precise structural analog to the neocortical minicolumn — the fundamental computational unit of the mammalian brain.
 
@@ -29,27 +29,32 @@ Input Tokens
     ↓
 [Embedding]
     ↓
-[Prelude]  — 4× MLA attention blocks, run once
+[Prelude]  — 4× MLA self-attention blocks (RoPE, causal), run once
     ↓        (sensory cortex analog)
     ↓
-[Recurrent Core]  — looped R times
-    ↓  ┌────────────────────────────────┐
-    ↓  │  MLA Attention (12-head)       │
-    ↓  │         ↓                      │
-    ↓  │  Toroidal Sheet MoE            │  ← the novel component
-    ↓  │    • reshape 768-dim → 32×24   │
-    ↓  │    • toroidal circular padding │
-    ↓  │    • 12 position-fixed experts │
-    ↓  │    • overlap-add fold          │
-    ↓  │         ↓                      │
-    ↓  │  LTI injection                 │
-    ↓  │  Hyper-connections             │
-    ↓  └────────────────────────────────┘
+[Recurrent Core]  — looped R times (shared weights)
+    ↓  ┌──────────────────────────────────────────────┐
+    ↓  │  hyper.combine(buffer) → h_input             │
+    ↓  │    (softmax-weighted blend of last 3 states)  │
+    ↓  │  LIE: sinusoidal loop-index signal            │
+    ↓  │    → projected to model_dim → added to h_input│
+    ↓  │  MLA self-attention (12-head, causal)         │
+    ↓  │  Toroidal Sheet MoE               ← novel     │
+    ↓  │    • reshape 768-dim → 32×24 grid             │
+    ↓  │    • circular (toroidal) padding              │
+    ↓  │    • unfold → 12 position-fixed experts       │
+    ↓  │    • per-expert SwiGLU                        │
+    ↓  │    • overlap-add fold                         │
+    ↓  │  LTI: h = sigmoid(A)·h_input + B·e + block_out│
+    ↓  │  hyper.update_buffer(buffer, h)               │
+    ↓  │    (push h to front of ring buffer,           │
+    ↓  │     drop oldest state)                        │
+    ↓  └──────────────────────────────────────────────┘
     ↓
-[Coda]  — 1× MLA attention block, run once
+[Coda]  — 1× MLA self-attention block (RoPE, causal), run once
     ↓     (motor cortex analog)
     ↓
-[RMSNorm → LM Head]
+[RMSNorm → LM Head]  (weight-tied to embedding)
     ↓
 Output Logits
 ```
@@ -59,7 +64,7 @@ Output Logits
 The key innovation. At each recurrent loop iteration:
 
 1. The 768-dim token embedding is reshaped into a **32×24 toroidal grid**
-2. **Circular padding** wraps both axes — eliminating edge effects, making every expert position structurally identical
+2. **Circular (toroidal) padding** wraps both axes — eliminating edge effects, making every expert position structurally identical
 3. **N×N patches** slide over the grid with configurable stride and overlap
 4. Each expert is **position-fixed** — no routing, no load-balancing loss, each expert always processes its assigned patch
 5. Shared border dimensions between adjacent patches accumulate gradients from both experts during backprop — **implicit communication through architecture, not explicit lateral connections**
@@ -70,7 +75,7 @@ The key innovation. At each recurrent loop iteration:
 Each expert position on the toroidal grid, stacked across all R recurrent loop iterations, forms a **cortical column**:
 
 | Neocortex | RTCC |
-|---|---|
+| --- | --- |
 | Cortical sheet (2D) | Toroidal grid (32×24) |
 | Minicolumn (depth) | Expert position across R loops |
 | ~6 cortical layers | R loop iterations |
@@ -90,7 +95,7 @@ prelude_layers:  4
 recurrent_layers: 6         # looped R times
 coda_layers:     1
 max_loop_iters:  8
-vocab_size:      50,000
+vocab_size:      50,257     # GPT-2 tokenizer
 
 # Primary RTCC config (Tier 1 comparison)
 patch_size:      10×10      # 100 dims per expert
@@ -106,12 +111,12 @@ privacy_pct:     36%
 The ratio of private to total expert dimensions is a key architectural hyperparameter. The paper ablates five configurations:
 
 | Config | Patch | Stride | Overlap | Experts | Private dims | Privacy% |
-|--------|-------|--------|---------|---------|-------------|---------|
-| sweep_11 | 3×3 | 2 | 1-cell | 192 | 1 | 11% |
-| sweep_36 | 5×5 | 4 | 1-cell | 48 | 9 | 36% |
-| sweep_44 | 6×6 | 4 | 2-cell | 48 | 4 | 11%* |
-| sweep_60 | 9×9 | 8 | 1-cell | 12 | 49 | 60% |
-| **sweep_64** | **10×10** | **8** | **2-cell** | **12** | **36** | **36%*** |
+| --- | --- | --- | --- | --- | --- | --- |
+| sweep\_11 | 3×3 | 2 | 1-cell | 192 | 1 | 11% |
+| sweep\_36 | 5×5 | 4 | 1-cell | 48 | 9 | 36% |
+| sweep\_44 | 6×6 | 4 | 2-cell | 48 | 4 | 11%\* |
+| sweep\_60 | 9×9 | 8 | 1-cell | 12 | 49 | 60% |
+| **sweep\_64** | **10×10** | **8** | **2-cell** | **12** | **36** | **36%**\* |
 
 \* Controlled pairs at the same expert count isolate the effect of overlap width independently of expert count.
 
@@ -122,16 +127,19 @@ The ratio of private to total expert dimensions is a key architectural hyperpara
 RTCC is Paper 2 in a two-paper sequence. **CART** ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026) establishes the recurrent framework through original ablation experiments:
 
 **Borrowed components assembled in CART:**
-- LTI injection for loop stability (formulation from OpenMythos / Claude Mythos)
-- Hyper-connections at loop boundaries (from Hyperloop, arXiv 2604.21254)
-- MLA attention (from DeepSeek-V2, arXiv 2405.04434)
-- RoPE, RMSNorm, SwiGLU, weight tying (standard components)
+
+* LTI injection for loop stability (Parcae, Prairie et al. 2026)
+* Loop index embedding LIE (OpenMythos, kyegomez)
+* Hyper-connections at loop boundaries (Hyperloop Transformer, arXiv 2604.21254)
+* MLA attention (DeepSeek-V2, arXiv 2405.04434)
+* RoPE, RMSNorm, SwiGLU, weight tying (standard components)
 
 **Original findings from CART ablations:**
-- **4+6+1 prelude/recurrent/coda balance** — empirically optimal at both dim=256 and dim=768; all prior RDT work uses symmetric configs
-- **Asymmetric MLA head counts** — 16-head prelude, 12-head recurrent core, 8-head coda
-- **R=8 loop ceiling** — validated as the optimal training ceiling
-- **Phased sequence-length and loop-count curriculum** — critical for stable training, validated across four phases
+
+* **4+6+1 prelude/recurrent/coda balance** — empirically optimal at both dim=256 and dim=768; all prior RDT work uses symmetric configs
+* **Asymmetric MLA head counts** — 16-head prelude, 12-head recurrent core, 8-head coda
+* **R=8 loop ceiling** — validated as the optimal training ceiling
+* **Phased sequence-length and loop-count curriculum** — critical for stable training, validated across four phases
 
 RTCC inherits all of the above from CART without modification and contributes exactly one change: the feed-forward layer in the recurrent core is replaced by the Toroidal Sheet MoE. This makes the paper's claim precise and fully controlled.
 
@@ -145,11 +153,11 @@ RTCC makes two distinct original contributions:
 
 The recurrent framework underlying RTCC was designed and validated through original ablation experiments in CART ([ccapps42/CART](https://github.com/ccapps42/CART), Capps 2026). Specific original findings include:
 
-- **4+6+1 layer balance** — asymmetric prelude/recurrent/coda configuration, empirically optimal across dim=256 and dim=768; all prior published RDT work uses symmetric configs
-- **Asymmetric MLA head counts** — 16-head prelude, 12-head recurrent core, 8-head coda; heavier prelude conditions the signal, lighter coda is sufficient for output projection
-- **R=8 loop ceiling** — validated as optimal training ceiling; lower ceilings constrain low-loop performance, higher ceilings degrade it
-- **Phased curriculum** — sequence length and loop count ramped jointly across four phases; independently validated as critical for stable training
-- **Component assembly** — LTI injection (from OpenMythos), hyper-connections (from Hyperloop), MLA (from DeepSeek-V2), RoPE, RMSNorm, SwiGLU assembled into a coherent architecture and validated at scale
+* **4+6+1 layer balance** — asymmetric prelude/recurrent/coda configuration, empirically optimal across dim=256 and dim=768; all prior published RDT work uses symmetric configs
+* **Asymmetric MLA head counts** — 16-head prelude, 12-head recurrent core, 8-head coda; heavier prelude conditions the signal, lighter coda is sufficient for output projection
+* **R=8 loop ceiling** — validated as optimal training ceiling; lower ceilings constrain low-loop performance, higher ceilings degrade it
+* **Phased curriculum** — sequence length and loop count ramped jointly across four phases; independently validated as critical for stable training
+* **Component assembly** — LTI injection (Parcae), loop index embedding (OpenMythos), hyper-connections (Hyperloop Transformer), MLA (DeepSeek-V2), RoPE, RMSNorm, SwiGLU assembled into a coherent architecture and validated at scale
 
 These findings are the contribution of CART. RTCC inherits this framework exactly, with no modifications, making the paper's claim precise: *the ToroidalMoE is the only variable.*
 
@@ -164,24 +172,26 @@ To our knowledge, RTCC is the first architecture to:
 
 ### Closest Prior Work
 
-- **SliceMoE** (Vejendla, 2024) — dimensional partitioning without overlap, without topology, without position-fixed experts
-- **MoGE** (Kang et al., 2025) — 2D structure applied to routing inputs, not dimensional ownership
+* **SliceMoE** (Vejendla, 2024) — dimensional partitioning without overlap, without topology, without position-fixed experts
+* **MoGE** (Kang et al., 2025) — 2D structure applied to routing inputs, not dimensional ownership
 
 ---
 
 ## Experiments
 
 All paper experiments use:
-- **Hardware:** RTX 3090 24GB
-- **Model dim:** 768
-- **Training data:** TinyStories, Wikipedia, FineWeb-Edu, FineWeb (via HuggingFace datasets)
-- **Evaluation:** Held-out validation set + lm-eval-harness benchmarks
-- **All results logged to SQLite** — exported to `results/` for reproducibility
+
+* **Hardware:** RTX 3090 24GB
+* **Model dim:** 768
+* **Tokenizer:** GPT-2 (`gpt2` via HuggingFace `transformers`), vocab size 50,257
+* **Training data:** TinyStories, Wikipedia, FineWeb-Edu, FineWeb (via HuggingFace datasets)
+* **Evaluation:** Held-out validation set + lm-eval-harness benchmarks
+* **All results logged to SQLite** — exported to `results/` for reproducibility
 
 ### Run Plan
 
 | Tier | Runs | Purpose |
-|------|------|---------|
+| --- | --- | --- |
 | Tier 1 | 5 | Architecture comparison: Dense FFN, Standard MoE, SliceMoE-flat, Flat Grid Overlap, RTCC |
 | Tier 2 | 4+1 | Privacy/overlap sweep (5 configs) |
 | Tier 3 | 2 | Inference-only communication ablations (zero shared dims, expert shuffle) |
@@ -208,7 +218,7 @@ architectures/
   05_rtcc/               — Full RTCC architecture
 
 shared/
-  components/            — MLA attention, RMSNorm, RoPE, LTI injection
+  components/            — MLA attention, RMSNorm, RoPE, LTI injection, LIE, hyper-connections
   training/              — Trainer, optimizer, checkpoint, DB logger
   data/                  — Curriculum scheduler, dataset loader, document packing
   eval/                  — Perplexity, lm-eval wrapper, specialization probing
@@ -244,7 +254,7 @@ paper/
 
 ## Installation
 
-```bash
+```
 git clone https://github.com/ccapps42/RTCC
 cd RTCC
 pip install -r requirements.txt
@@ -258,7 +268,7 @@ pip install -r requirements.txt
 
 > ⚠️ **Note:** Paper experiments are still in progress. This section will be completed at submission time with exact commands, config paths, and checkpoint links.
 
-```bash
+```
 # Prepare validation set (run once before any training)
 python scripts/prepare_validation.py
 
@@ -296,7 +306,7 @@ Also cite CART (Paper 1):
 
 ```bibtex
 @article{capps2026cart,
-  title   = {Context-Anchored Recurrent Transformer},
+  title   = {CART: Context-Anchored Recurrent Transformer},
   author  = {Capps, Chad},
   journal = {arXiv preprint},
   year    = {2026},
@@ -308,18 +318,19 @@ Also cite CART (Paper 1):
 
 ## Key References
 
-- Geiping et al., *Huginn* (2025) — recurrent depth at scale
-- Hyperloop Transformers, arXiv 2604.21254 (2026) — hyper-connections
-- Oncescu et al., arXiv 2604.21215 (2026) — recurrent transformer theory
-- Gomez, *OpenMythos* (2026) — LTI injection formulation
-- Dai et al., *DeepSeek-V2*, arXiv 2405.04434 (2024) — MLA attention
-- Vejendla, *SliceMoE* (2024) — closest prior work on dimensional partitioning
-- Hawkins et al., *Thousand Brains Theory* (2019) — columnar cortical computation
-- Gardner et al., *Science* (2022) — toroidal topology of grid cells in entorhinal cortex
-- Dehghani et al., *Universal Transformer* (2018) — recurrent depth foundations
+* Geiping et al., *Huginn* (2025) — recurrent depth at scale
+* Hyperloop Transformers, arXiv 2604.21254 (2026) — hyper-connections
+* Oncescu et al., arXiv 2604.21215 (2026) — recurrent transformer theory
+* Gomez, *OpenMythos* (2026) — loop index embedding (LIE)
+* Prairie et al., *Parcae* (2026) — LTI injection, spectral radius stability
+* Dai et al., *DeepSeek-V2*, arXiv 2405.04434 (2024) — MLA attention
+* Vejendla, *SliceMoE* (2024) — closest prior work on dimensional partitioning
+* Hawkins et al., *Thousand Brains Theory* (2019) — columnar cortical computation
+* Gardner et al., *Science* (2022) — toroidal topology of grid cells in entorhinal cortex
+* Dehghani et al., *Universal Transformer* (2018) — recurrent depth foundations
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE)
+MIT License — see [LICENSE](https://github.com/ccapps42/RTCC/blob/master/LICENSE)

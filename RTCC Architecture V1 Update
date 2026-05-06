@@ -1,0 +1,1348 @@
+RTCC Architecture Specification (Version 1)
+Recurrent Depth Transformer with Toroidal Expert Sheet
+Document purpose: Complete architecture specification for a focused, ablation-friendly
+first paper establishing the Toroidal Expert Sheet as a novel FFN replacement inside a
+Recurrent Depth Transformer.
+Based on: CART (ccapps42/CART on GitHub) experimental results + RTCC2 Revision 3
+design work, scoped down to a defensible v1 paper claim. Target hardware: Single NVIDIA
+RTX 3090 (24 GB VRAM), training and inference. Host environment: Windows 11.
+Scope discipline: This v1 specification deliberately excludes architectural elements whose
+contribution cannot be cleanly ablated at the ~200M-real-parameter scale on a single GPU.
+Excluded elements (SSM, manifold-constrained hyper-connections, depth-wise per-loop
+LoRA, DeepSeek Sparse Attention) are documented in Section 11 with explicit conditions for
+inclusion in v2.
+Changes from RTCC2 Revision 3
+This v1 specification is a deliberate scope reduction from RTCC2 Revision 3, intended to
+produce a paper with a clean, defensible novelty claim and a feasible ablation budget on a
+single RTX 3090. Two prelude sizings (input embedding bottleneck and prelude FFN
+expansion) were upsized from initial v1 draft values based on the leverage argument that e
+is re-injected R times into the recurrent core.
+Element
+RTCC2
+Rev 3
+RTCC v1 Rationale
+SSM (Mamba) in
+core
+Included Removed Confounds toroidal-sheet ablation;
+contribution unmeasured at this scale
+mHC (Stiefel-
+constrained
+hyper-
+connections)
+Included Removed Riemannian SGD complexity unjustified at
+this scale
+Depth-wise per- Included Removed Asymmetric gradient signal under K=8 BPTT
+loop LoRA (early-loop LoRAs undertrain)
+DeepSeek Sparse
+Attention (DSA)
+Phase 3
+only
+Removed Indexer overhead exceeds savings at v1 max
+context (8K); defer to v2
+Phase 3 (16K
+context)
+Included Removed Long-context extension is a v2 concern; v1
+trains to 8K
+Coda FFN
+expansion
+6× 4×
+6× was not ablated; 4× is the conservative v1
+default
+Optimizer
+Hybrid
+Muon +
+AdamW
+Hybrid
+Muon +
+AdamW
+Kept — well-validated, real wallclock win
+Prelude FFN
+expansion
+4× 6×
+Increased — R-fold leverage of e re-injection
+justifies expanded factual capacity in
+highest-leverage location
+Input embedding
+bottleneck
+256 512
+Increased — Rev 2 finding that 512 was tight
+at the output is suggestive evidence that 256
+is tight at the input
+Unembedding
+bottleneck
+768 768 Kept — output-quality win is cheap
+Net effect: Real params 171M → 202M (deferred elements −15M, prelude scaling +46M);
+effective params 553M → 457M; total training time ~3–5 days → ~2.7–4.0 days; ablation
+matrix size reduced by roughly an order of magnitude.
+Attribution — Novel Contributions by Chad A. Capps
+Prior art search conducted through May 2026, covering arXiv, Semantic Scholar, major ML
+conference proceedings (NeurIPS, ICML, ICLR, ACL), and GitHub. Search explicitly included
+2026 publications.
+The RTCC v1 architecture incorporates the following original contributions:
+1. Toroidal Expert Sheet — A feed-forward replacement mechanism in which the token’s
+hidden state is projected into an expanded 2D “sheet” of dimensions, partitioned into
+overlapping expert patches that tile a torus. No prior ML work uses toroidal geometry for
+expert partitioning. Nearest neighbors (local MoE, convolutional MoE, factorized MoE) all
+use flat, non-overlapping, or graph-connected partitioning without torus wrapping.
+2. Cortical Column Analogy for Looped Transformer Experts — A three-way
+simultaneous mapping: (a) recurrent loop depth ↔ cortical laminar depth, (b) toroidal
+expert patches ↔ cortical columns, (c) overlap cells between patches ↔ horizontal
+cortical fibers. No prior ML work maps looped/recurrent transformer depth to cortical
+column depth while simultaneously mapping spatial expert locality to cortical columns.
+3. Projection into Expanded Sheet Space for Toroidal Expert Tiling with Gated
+Residual Bypass — The combination of projecting up from d_model into a larger sheet
+dimensionality specifically sized for clean toroidal tiling (5,184 = 72×72 for 64 experts at
+10×10 stride-9 patches), followed by a gated additive residual that bypasses the full
+sheet path ( h_new = h + proj_down(expert_out) ), is novel in this specific context.
+Component-level precedents (ResNet residuals 2015, gated residuals 2019) are well-
+established, but their application as a bypass around a toroidal expert sheet is novel.
+4. Symmetric Square Toroidal Expert Grid with Stride-Based Patch Tiling — The
+specific construction of an 8×8 symmetric toroidal grid where each expert owns a 10×10
+patch at stride 9 (leaving 1-cell overlap on all four edges, with torus wrap for boundary
+experts) is novel. The square grid eliminates axis bias that a rectangular grid (e.g., 12×4)
+would introduce. All 64 experts are topologically equivalent.
+5. RDT + Toroidal Expert Sheet Combination — Placing the toroidal expert sheet as the
+FFN replacement inside the recurrent core of a Recurrent Depth Transformer (Open
+Mythos / RDT pattern) is a novel combination. No prior work combines these two
+architectural patterns. This is the central paper claim of v1.
+6. Learned Sink Tokens as Global Aggregators Feeding Re-Injected Prelude State in
+RDT Context — Sink tokens (Xiao et al. 2023) are established. Re-injection of prelude
+state into the recurrent core is the Open Mythos pattern. The specific combination —
+learned sink tokens as the global aggregation mechanism within the prelude, with that
+aggregated state then re-injected into each loop iteration of the recurrent core — is
+novel.
+The components MLA (DeepSeek-V2), YaRN RoPE, GQA, Flash Attention 2, Muon optimizer
+(Jordan et al. 2024), and the hybrid Muon + AdamW pattern (DeepSeek V4, April 2026) are
+external published work integrated into the architecture, not original contributions. The
+novel claim is the unified integration of toroidal experts + cortical column analogy + RDT, not
+the individual supporting components.
+— Chad A. Capps, May 2026
+1. Design Philosophy
+This architecture is a Recurrent Depth Transformer (RDT) — a three-block design (Prelude
+→ Recurrent Core → Coda) where a single shared-weight core block is looped R times
+during a single forward pass. Reasoning depth scales with loop count, not parameter count.
+The key insight from CART experimental data: recurrent depth achieves better perplexity
+than feed-forward depth at equal parameter count.
+The v1 paper claim: the Toroidal Expert Sheet, used as the FFN replacement inside the
+recurrent core of an RDT, beats matched-FLOP alternatives (dense FFN, vanilla top-k MoE)
+at equal training token budget.
+Core innovations beyond CART:
+Toroidal expert sheet (cortical column analog) replacing standard FFN in core
+Multi-head Latent Attention (MLA) replacing standard attention in core (KV compression
+critical for R-times-looped attention)
+Loop Index Embedding (LIE) for loop-depth differentiation
+Sliding window attention + learned sink tokens in prelude
+Gated residual bypass around the toroidal expert sheet
+Linear time-invariant (LTI) recurrent injection of prelude state into each core loop
+Explicitly out of scope for v1 (see Section 11): SSM in core, manifold-constrained hyper-
+connections, depth-wise LoRA per loop, DSA, long-context (≥16K) training.
+2. Global Configuration
+d_model = 1024 # model hidden dimension
+vocab_size = 32,000 # Llama-2 BPE tokenizer
+max_seq_len = 8,192 # trained in two phases; YaRN allows inference extension
+precision = BF16 # training and inference
+loops (R) = 16 # recurrent core iterations
+prelude_layers (P) = 6 # validated by CART experiments: P=6 best
+coda_layers = 1 # CART experimental finding: 1 layer sufficient
+dropout = 0.0 # no dropout — RMSNorm + weight decay sufficient
+bias_terms = False # no bias in any linear projection
+norm_type = RMSNorm # pre-norm architecture throughout
+norm_eps = 1e-6
+activation = SwiGLU # all FFN blocks
+weight_tying = False # asymmetric input/output dims preclude tying
+Why these globals:
+d_model=1024 : fits toroidal sheet as 32×32 native space; expanded sheet projects to
+5,184 (72×72)
+R=16 : beyond CART’s tested R=8 sweet spot; VRAM headroom on 3090 allows this;
+adds reasoning depth at near-zero param cost (core stored once)
+P=6 : experimental evidence from CART sweeps shows P=6 outperforms P=2, P=4; e is
+re-injected every loop so prelude quality compounds R×
+coda=1 : CART code asserts n_coda==1 ; core’s R self-attention passes mean h_
+R is
+already highly refined
+dropout=0.0 : CART finding; architecture has strong implicit regularization (RMSNorm,
+weight decay, depth-scaled init)
+max_seq_len=8192 : v1 deliberately excludes 16K-context training. The Toroidal Expert
+Sheet contribution is independent of context length; extending to 16K+ requires DSA to
+be VRAM-tractable on a 3090, and DSA is deferred to v2.
+3. Parameter Summary
+Block Real Params Loops Effective Params
+Input embeddings (factored 512) 16.91M 1 16.91M
+Learned sink tokens 0.07M 1 0.07M
+Prelude (6 layers, 6× FFN) 129.06M 1 129.06M
+Recurrent core 16.95M 16 271.20M
+Coda (1 layer, 4× FFN) 13.95M 1 13.95M
+Output unembedding (768 bottleneck) 25.37M 1 25.37M
+Total ~202.2M ~456.4M
+Leverage ratio ~2.26×
+VRAM budget:
+Item Phase 1 (2K Phase 2 (8K Inference
+seq) seq)
+Weights BF16 ~405 MB ~405 MB ~405 MB
+Gradients BF16 ~405 MB ~405 MB —
+Optimizer states (Muon+AdamW
+mix)
+~1.17 GB ~1.17 GB —
+Activations (grad ckpt) ~1.7 GB ~4.4 GB ~170 MB
+KV cache (MLA) ~0.5 MB ~2 MB ~2 MB
+Batch overhead ~0.8 GB ~1.2 GB —
+Total ~4.5 GB ~7.6 GB ~580 MB
+Comfortable on RTX 3090 (24 GB) across both phases. Headroom available for batch-size
+experimentation and, if needed, a Phase 2 extension to 12K context for inference-time
+evaluation runs.
+Optimizer state estimate: AdamW carries 2 moment tensors per param; Muon carries 1
+momentum tensor per Muon-managed param plus a small Newton-Schulz workspace.
+Hybrid mix lands at ~1.17 GB at 202M total params.
+4. PRELUDE
+Runs once. Produces stable encoded state e passed to the recurrent core. 6 layers, unique
+weights per layer.
+4.1 Layer Ordering (executed top to bottom once)
+Input tokens
+↓
+[Factored Input Embedding]
+↓
+[Learned Sink Token Prepend] ← 64 learned tokens prepended to sequence
+↓
+[YaRN RoPE position encoding] ← applied to Q, K in all attention layers
+↓
+┌─ Prelude Layer × 6 ─────────────────────────────┐
+│ RMSNorm (pre-attention) │
+│ GQA Self-Attention + Flash Attention 2 │
+│ └─ Sliding Window pattern (W=2048) │
+│ └─ Sink tokens attend full sequence │
+│ RMSNorm (pre-FFN) │
+│ SwiGLU FFN (d → 6d → d) │
+└──────────────────────────────────────────────────┘
+↓
+[RMSNorm on e output] ← stabilizes e before LTI re-injection
+↓
+e (encoded state, frozen for re-injection)
+4.2 Input Embeddings
+vocab_size = 32,000 # Llama-2 BPE
+factored_dim = 512 # intermediate factoring dimension
+embed_A = [32,000 × 512] # 16.38M params
+embed_B = [512 × 1024] # 0.52M params
+total = ~16.91M params
+init = normal σ=0.02
+Why factored: reduces embedding parameter cost vs. direct [32K × 1024] (32.77M);
+factored at 512 saves ~16M params relative to direct embedding.
+Why 512 bottleneck (not 256): the unembedding analysis showed a 512 bottleneck was
+empirically too tight at the output side (which is why the unembedding bottleneck is 768).
+The same evidence is suggestive at the input — 256 likely under-served per-token
+expressivity, since every downstream operation depends on the post-embedding token
+representation. Widening to 512 costs +8.4M real params relative to a 256 bottleneck, and
+the cost is upfront (not loop-multiplied), making this a cheap, well-motivated upgrade.
+ALBERT-style aggressive factoring (e.g., 128) was considered and rejected for the same
+reason.
+4.3 Learned Sink Tokens
+num_sink_tokens = 64
+sink_params = [64 × 1024] # 65,536 params (~0.07M)
+init = normal σ=0.02
+position = prepended to sequence before layer 1
+attention_pattern = full causal over all tokens (no window constraint)
+purpose = aggregate global sequence signal into e
+Why learned prefix over first-64-tokens: e is re-injected every loop — global signal in e
+must be structurally reliable, not content-dependent. Learned prefixes ensure 64 stable
+global aggregator positions regardless of input content.
+4.4 YaRN RoPE
+rope_base = 500,000 # extended base (vs. standard 10,000)
+rope_scale = 4 # trained at 8K, supports inference up to ~32K
+rope_dims = 1024 # full d_model
+rope_type = YaRN interpolation
+applied_to = Q, K in all prelude attention layers
+inherited_by = core MLA, coda MLA
+Why YaRN: standard RoPE collapses beyond trained context length. YaRN interpolates per-
+dimension — high-frequency dims interpolated (local precision), low-frequency dims
+extrapolated (long-range). base=500K per Llama-3 practice.
+Why scale=4 in v1: v1 trains to 8K. YaRN with scale=4 supports inference-time extension to
+~32K without retraining. The validated long-context regime (16K+ training) is deferred to v2
+along with DSA.
+4.5 Per Prelude Layer (×6, unique weights)
+Weight init: depth-scaled σ = 0.02 / √(2×6) = 0.02/√12 ≈ 0.00577
+Why depth-scaled: prevents residual stream variance explosion at P=6. GPT-2 established
+this practice. Applied to prelude/coda (unique weights, real depth); core uses standard init
+(shared weights, loops handle normalization via RMSNorm).
+── RMSNorm (pre-attention) ──────────────────────────
+d_model = 1024
+eps = 1e-6
+params = 1,024
+── GQA Self-Attention + Flash Attention 2 ───────────
+d_model = 1024
+num_q_heads = 8
+num_kv_heads = 2 # 4:1 GQA ratio
+head_dim = 128 # d_model / num_q_heads = 1024/8
+kv_head_dim = 128
+q_proj = [1024 × 1024] # 1.05M
+k_proj = [1024 × 256] # 0.26M (2 heads × 128)
+v_proj = [1024 × 256] # 0.26M
+o_proj = [1024 × 1024] # 1.05M
+attention_params = ~2.62M per layer
+implementation = Flash Attention 2
+rope = YaRN applied to Q, K
+── Sliding Window Attention Pattern ─────────────────
+pattern = sliding window + global sinks
+window_size = 2,048
+global_tokens = 64 local_tokens = all others, window=2,048
+# sink tokens attend full sequence
+Why GQA not MHA: 4:1 KV ratio cuts KV cache 4× with minimal quality loss.
+Why SWA in prelude: prelude builds e — local context sufficient since core re-injects e
+every loop, resolving long-range dependencies iteratively. SWA gives ~8× FLOPs reduction
+on the dominant prelude attention cost at 8K seq.
+Why FA2: eliminates O(n²) memory materialization, 2–3× wall-clock speedup, especially
+critical at 8K seq.
+── RMSNorm (pre-FFN) ────────────────────────────────
+d_model = 1024
+eps = 1e-6
+params = 1,024
+── FFN (SwiGLU) ─────────────────────────────────────
+d_model = 1024
+d_hidden = 6144 # 6× expansion
+gate_proj = [1024 × 6144] # 6.29M
+up_proj = [1024 × 6144] # 6.29M
+down_proj = [6144 × 1024] # 6.29M
+activation = SwiGLU
+ffn_params = ~18.87M per layer
+Why 6× expansion in prelude: factual associations live primarily in FFN weights (Geva et
+al. 2021, “Transformers are Key-Value Memories”). Prelude FFN runs once with unique
+weights per layer — expanding it adds real, non-multiplied parameter storage. Critically, e is
+re-injected R=16 times into the recurrent core, so factual signal baked into e by a richer
+prelude FFN compounds through every loop. This is the highest-leverage location in the
+architecture for adding factual breadth — an extra parameter here is “amortized” across 16
+loop iterations, while the same parameter added to the core proper would cost R× more in
+terms of KV cache and activation memory.
+The 4× → 6× upgrade adds +37.7M real params to a single-pass component (no loop
+multiplier on the cost side, R-fold leverage on the benefit side). The cost is ~+15-25%
+prelude wallclock and ~+0.4 GB peak VRAM, well within the 3090 budget. Coda FFN is held
+at 4× because it does not benefit from this leverage (single pass, no re-injection); see
+Section 11.7.
+Per prelude layer total: ~21.49M params
+4.6 Prelude Output Normalization
+RMSNorm on e:
+d_model = 1024
+eps = 1e-6
+params = 1,024
+Why normalize e: ensures LTI injection ( A·h + B·e ) receives a stable, well-scaled e
+anchor regardless of prelude depth or input distribution.
+4.7 Prelude Parameter Summary
+Input embeddings = 16.91M
+Learned sink tokens = 0.07M
+6 layers × 21.49M = 128.94M
+Output RMSNorm = ~0.001M
+─────────────────────────────────
+Prelude total = ~145.92M
+5. RECURRENT CORE
+Single shared-weight block executed R=16 times. Gradient: truncated BPTT K=8 (last 8
+loops), stop-gradient on e injection. All elements stored once in memory, looped 16×.
+5.1 Layer Ordering Per Loop (executed top to bottom, 16 times)
+Note on what’s not here vs. RTCC2 Rev 3: SSM, mHC, depth-wise LoRA, and DSA are
+deliberately absent. See Section 11 for rationale and conditions for inclusion in v2.
+[LIE injection] ← add loop index embedding to h_t
+↓
+[RMSNorm (pre-attention)]
+[MLA Self-Attention + FA2] ← full causal
+↓
+[RMSNorm (pre-expert-sheet)]
+[proj_up: 1024 → 5,184] [Toroidal Expert Sheet] └─ 8×8 grid, 72×72 sheet
+└─ 10×10 patches, stride 9
+└─ 8×8 private core per expert
+└─ 1-cell overlap lateral communication
+└─ torus wrap (all edges)
+← expand to toroidal sheet space
+← 64 cortical column experts in parallel
+[Overlap aggregation] [proj_down: 5,184 → 1024]
+[h_new = h + proj_down(expert_out)] ↓
+[Early exit probe] ↓
+[LTI recurrent injection] ↓
+← softmax-normalized weighted sum at boundary dims
+← gated residual bypass
+← confidence scalar, min 4 loops
+← h_{t+1} = A·h_new + B·e.detach()
+(next loop or exit to coda)
+5.2 LIE — Loop Index Embedding
+num_loop_indices = 16
+d_model = 1024
+embedding_table = [16 × 1024] # 16,384 params
+injection = additive to h_t at start of each loop
+init = sinusoidal then learned
+grad = flows normally (not stop-gradient)
+Why LIE: without loop index signal, shared weights produce identical transformation every
+loop — pure repetition converging to a fixed point. LIE makes each loop iteration
+distinguishable, enabling emergent curriculum: early loops parse/encode, late loops
+reason/refine. Analogous to RoPE giving positional awareness in token space — LIE gives
+depth awareness in loop space. In v1, LIE is the only mechanism breaking loop symmetry
+(depth-wise LoRA having been excluded), making it load-bearing for the architecture to
+function.
+5.3 MLA Self-Attention
+── RMSNorm (pre-attention) ───────────────────────────
+d_model = 1024
+eps = 1e-6
+params = 1,024
+── MLA Self-Attention + Flash Attention 2 ───────────
+d_model = 1024
+num_heads = 8
+head_dim = 64
+d_latent = 128 # KV compression ratio 8:1
+d_rope = 32 # RoPE applied to subset of head dims
+q_proj = [1024 × 512] # 0.52M (8 heads × 64)
+kv_compress = [1024 × 128] # 0.13M (compress KV to latent)
+kv_decompress_k = [128 × 512] # 65,536 params
+kv_decompress_v = [128 × 512] # 65,536 params
+o_proj = [512 × 1024] # 0.52M
+q_norm = RMSNorm(64) # per head, 8 × 64 = 512 params
+k_norm = RMSNorm(64) # per head, 8 × 64 = 512 params
+rope = YaRN inherited from prelude
+pattern = full causal
+implementation = Flash Attention 2
+MLA_params = ~1.37M
+init = standard σ=0.02
+── MLA KV cache (inference) ─────────────────────────
+per_token = 128 dims × 2B = 256 bytes
+at_8K_context = 8,192 × 256 = ~2 MB
+loop_sharing = True # cache not multiplied per loop
+Why MLA not GQA in core: core runs R=16 times. At 8K context, GQA KV cache would
+grow per loop in a naive implementation; MLA compresses KV to a 128-dim latent, reducing
+cache 8:1. Even at v1’s modest 8K context, this compounds favorably across the looped
+attention. DeepSeek-V2/V3 validated MLA at scale with no measurable quality loss.
+Why full causal: at 8K context with R=16 loops, full causal attention is computationally
+tractable on a 3090 (this is why we cap v1 at 8K — at 16K, full MLA × 16 loops becomes
+expensive enough that DSA becomes structurally necessary, pushing it into v2).
+5.4 Toroidal Expert Sheet
+── Sheet Geometry ───────────────────────────────────
+d_model = 1024 # model dimension (not sheet size)
+sheet_dims = 5,184 # expanded expert space
+sheet_shape = 72 × 72 # square — symmetric torus
+expert_grid = 8 × 8 = 64 experts
+patch_size = 10 × 10 = 100 dims (includes overlap)
+patch_stride = 9 # patch starts every 9 dims
+private_core = 8 × 8 = 64 dims (patch minus 1-cell border each side)
+edge_overlap = 32 dims per patch (4 sides × 8 cells), shared 2-way
+corner_overlap = 4 dims per patch (4 corners × 1 cell), shared 4-way
+torus_wrap = True # modular indexing, all edges wrap
+assignment = deterministic by dim position, no router
+routing = none # no router, no load balancing loss needed
+Why 8×8 square grid: symmetric torus — every expert has identical neighbor distance in
+both axes. A rectangular grid (e.g., 12×4) would have 3× more horizontal than vertical
+neighbors, creating axis bias. 8×8 eliminates this. All 64 experts are topologically
+equivalent.
+Why 5,184 = 72×72: cleanly tiles 8×8 experts at stride 9 with 10×10 patches and 1-cell
+overlap. 72 = 8×9. Sheet must be a rectangle where cols = experts_x × stride and rows
+= experts_y × stride.
+── RMSNorm (pre-expert-sheet) ───────────────────────
+d_model = 1024
+eps = 1e-6
+params = 1,024
+── Sheet Projection Up ──────────────────────────────
+proj_up = [1024 × 5,184] # 5.31M params
+init = depth-scaled σ=0.02/√2
+Why project up: d
+_model=1024 cannot fit 64 experts of 10×10 patches ( 64×9² = 5,184 >
+1024 ). Projection creates expanded space where toroidal geometry is meaningful. proj_up
+learns a basis — which combinations of d
+_model dims map to which sheet regions.
+Analogous to a Fourier transform projecting signal into a basis where local operations are
+meaningful.
+── Expert FFN (per expert, shared across all loops) ──
+input_dim = 100 # full 10×10 patch (includes overlap)
+d_hidden = 256 # expansion within subspace
+output_dim = 100 # writes back to full 10×10 patch
+gate_proj = [100 × 256] # 25,600 params
+up_proj = [100 × 256] # 25,600 params
+down_proj = [256 × 100] # 25,600 params
+activation = SwiGLU
+params_per_expert = ~76.8K
+total_64_experts = 64 × 76.8K # ~4.92M
+init = staggered # expert_i offset by δ×i, δ=0.001
+# breaks symmetry so experts diverge
+Why experts write full 10×10 including overlap: overlap cells receive writes from two
+experts simultaneously (corners receive writes from four experts) — this is the lateral
+communication mechanism. Aggregation resolves the multi-expert conflict at each overlap
+cell. Without writing to overlap, there is no cross-expert communication — the entire point
+of the torus topology is lost.
+Why staggered init: identical init risks experts collapsing to the same function (symmetry
+problem). Small offset δ=0.001 × expert_index seeds each expert differently, allowing
+gradient descent to push them toward distinct subspace specializations.
+Cortical column analogy: each expert is a cortical column. The loop dimension is cortical
+depth. Same expert weights applied to the same subspace across 16 loops = column
+processing input feature through successive abstraction layers. Torus overlap = lateral
+horizontal and vertical connections between columns.
+Why corner cells receive 4 contributors: at the corner of any expert’s 10×10 patch, four
+10×10 patches meet (the expert itself, its right neighbor, its bottom neighbor, and its
+bottom-right diagonal neighbor — all subject to torus wrap at boundaries). Each of these
+four experts writes to the same corner dim, requiring 4-way aggregation rather than the 2-
+way aggregation sufficient for non-corner edge cells.
+Why corner overlap matters architecturally: corner cells are the only locations on the
+sheet where information from diagonally-adjacent experts mixes directly. Without corner
+overlap, expert (i,j) would only communicate laterally with its 4 axis-aligned neighbors (up,
+down, left, right). Corner overlap extends this to all 8 surrounding experts, making the torus
+topology genuinely 2D rather than effectively two interleaved 1D rings. The 64 corner dims
+are small in count but topologically critical — they are the lateral coupling sites that
+distinguish a true torus from a rectangular grid with edge connections.
+── Overlap Aggregation ──────────────────────────────
+method = learned weighted sum
+weight_per_cell = scalar per overlap dim per contributing expert
+Sheet dim breakdown (5,184 total = 72 × 72):
+private cells = 4,096 dims (interior 8×8 of each patch, 1 contributor)
+edge overlap = 1,024 dims (2 contributors per cell)
+corner overlap = 64 dims (4 contributors per cell)
+verification = 4,096 + 1,024 + 64 = 5,184 ✓
+total_params init_edge_cells init_corner_cells constraint = 1,024×2 + 64×4 = 2,304 scalars (negligible)
+= 0.5 per contributor (sums to 1.0)
+= 0.25 per contributor (sums to 1.0)
+= per-cell contributor weights softmax-normalized
+during forward pass to maintain unit-sum invariant
+Why softmax normalization vs. raw learned weights: unit-sum constraint prevents the
+aggregation step from amplifying or attenuating signal magnitude. Each overlap cell’s value
+must be a true convex combination of its contributors’ writes — otherwise the LayerNorm-
+like statistics that downstream operations expect would drift loop over loop. Softmax over
+the per-cell contributor weights is differentiable, cheap, and preserves gradient flow to all
+contributors.
+── Gated Residual Bypass ────────────────────────────
+formula:
+h_expanded = proj_up(RMSNorm(h))
+reshape → [batch × seq_len × 72 × 72]
+expert_out = toroidal_sheet(h_expanded) # all 64 experts parallel
+aggregate overlap cells via softmax-weighted sum
+flat = reshape(expert_out, [batch × seq_len × 5184])
+delta = proj_down(flat)
+h_new = h + delta # residual bypasses sheet
+Why gated residual: proj_down is lossy (5,184 → 1,024). Without residual, every loop
+replaces h with compressed expert output — intermediate reasoning state is recompressed
+16×, degrading multi-hop reasoning. With residual, h passes through untouched via LTI;
+proj_down carries only expert-induced signal as additive correction. Experts become
+modulators of h, not replacements. Analogous to LoRA: base weights (h) preserved, expert
+delta added.
+── Sheet Projection Down ────────────────────────────
+proj_down = [5,184 × 1024] # 5.31M params
+init = depth-scaled σ=0.02/√2
+total_proj_params = proj_up + proj_down = ~10.62M
+5.5 Early Exit Probe
+input_dim = 1024
+output_dim = 1 # confidence scalar
+linear = [1024 × 1] # 1,024 params
+bias = 1 # 1 param
+activation = Sigmoid
+total_params = 1,025
+threshold = 0.95 # tunable at inference time
+min_loops = 4 # hard floor — never exit before loop 4
+application = after expert sheet, before LTI
+training_phase_1 = frozen # probe frozen during Phase 1
+training_phase_2 = unfrozen # probe trains from Phase 2 onward
+aux_loss = BCE × λ=0.1 against convergence target
+convergence_ε = 0.001 # min loss delta to justify another loop
+Why early exit: R=16 is maximum — simple inputs (lookup, extraction) may converge at 4–6
+loops. Probe predicts when additional loops won’t meaningfully change output. Reduces
+average inference latency without quality loss on easy tasks. Frozen Phase 1 because probe
+learns on noisy signal if model itself is unstable — Phase 2 model is stable enough for probe
+to learn genuine convergence patterns.
+v1 paper note: the probe is trained but evaluation runs report two numbers — quality with
+min
+_loops=R=16 (full depth, no early exit) and quality with the probe active. This isolates
+the probe’s effect from the toroidal sheet’s effect on the headline result.
+5.6 LTI Recurrent Injection
+A_matrix = diagonal [1024] # 1,024 params
+B_matrix = diagonal [1024] # 1,024 params
+formula = h_{t+1} = A·h_new + B·e
+A_init = 0.9 # near-identity, stable decay
+B_init = 0.1 # weak e injection, grows with training
+stability = |A| < 1 enforced # spectral radius constraint
+e_gradient = stop-gradient # e.detach() — e is constant anchor
+application = end of each loop, after early exit probe
+Why LTI: without e re-injection, h drifts arbitrarily across 16 loops — loses grounding in
+original input. LTI formula h_{t+1} = A·h + B·e is a linear time-invariant system: A controls
+how much prior state persists (memory), B controls how strongly e anchors each loop
+(grounding). |A|<1 ensures spectral radius constraint — system is stable, no residual
+explosion. Diagonal-only A, B keeps param count minimal (2×1024) while giving per-
+dimension control. Stop-gradient on e: prevents gradient from flowing back into prelude via
+LTI at every loop (which would mean R× prelude backward passes — expensive and
+destabilizing).
+5.7 Recurrent Core Parameter Summary
+LIE embeddings = ~16K
+MLA attention = ~1.37M
+RMSNorms (×2) = ~2K
+Sheet proj_up + proj_down = ~10.62M
+Toroidal experts (64) = ~4.92M
+Overlap aggregation = ~2.3K
+Early exit probe = ~1K
+LTI A, B diagonals = ~2K
+─────────────────────────────────
+Core total = ~16.95M
+Effective depth (×16) = ~271.2M
+6. CODA
+1 layer, unique weights, runs once. Receives final h_R, transforms, projects to vocab.
+6.1 Layer Ordering (executed top to bottom once)
+h_R (final recurrent hidden state)
+↓
+[RMSNorm (pre-attention)]
+[MLA Self-Attention + FA2] [RMSNorm (pre-FFN)]
+[SwiGLU FFN (d → 4d → d)] ↓
+[Final RMSNorm]
+[Factored Unembedding] ↓
+← full causal
+← 4× expansion
+← 1024 → 768 → 32,000
+Output logits
+6.2 Coda Layer
+Weight init: depth-scaled σ = 0.02 / √(2×1) = 0.02/√2 ≈ 0.01414
+── RMSNorm (pre-attention) ───────────────────────────
+d_model = 1024
+eps = 1e-6
+params = 1,024
+── MLA Self-Attention + Flash Attention 2 ───────────
+d_model = 1024
+num_heads = 8
+head_dim = 64
+d_latent = 128 # consistent with core
+d_rope = 32
+q_proj = [1024 × 512] # 0.52M
+kv_compress = [1024 × 128] # 0.13M
+kv_decompress_k = [128 × 512] # 65,536 params
+kv_decompress_v = [128 × 512] # 65,536 params
+o_proj = [512 × 1024] # 0.52M
+q_norm = RMSNorm(64) # 512 params
+k_norm = RMSNorm(64) # 512 params
+rope = YaRN inherited
+pattern = full causal
+implementation = Flash Attention 2
+attention_params = ~1.37M
+Why MLA in coda: consistency with core; KV compression reduces memory at inference;
+single pass so no loop multiplication concern.
+── RMSNorm (pre-FFN) ────────────────────────────────
+d_model = 1024
+eps = 1e-6
+params = 1,024
+── FFN (SwiGLU) ─────────────────────────────────────
+d_model = 1024
+d_hidden = 4096 # 4× expansion
+gate_proj = [1024 × 4096] # 4.19M
+up_proj = [1024 × 4096] # 4.19M
+down_proj = [4096 × 1024] # 4.19M
+activation = SwiGLU
+ffn_params = ~12.58M
+Coda layer total = ~13.95M
+Why 4× expansion in coda for v1 (asymmetric with prelude): the leverage argument that
+motivated 6× in the prelude does not apply to coda. Prelude e is re-injected R=16 times into
+the recurrent core; factual capacity added to the prelude FFN compounds 16-fold
+downstream. Coda runs once at the end, with no re-injection. RTCC2 Rev 3 specified 6× for
+“output expressivity,” but this was qualitative and not ablated — and the leverage asymmetry
+makes the unablated jump less defensible at the output. v1 holds coda at 4× as the
+conservative default; 6× is a v2 ablation candidate (Section 11.7).
+6.3 Output
+── Final RMSNorm ────────────────────────────────────
+d_model = 1024
+eps = 1e-6
+params = 1,024
+── Factored Unembedding ─────────────────────────────
+in_dim = 1024
+factored_dim = 768 # widened bottleneck
+vocab_size = 32,000
+contract_proj = [1024 × 768] # 0.79M
+unembed_proj = [768 × 32,000] # 24.58M
+total = ~25.37M
+weight_tying = False
+init = normal σ=0.02
+Why factored unembedding: direct [1024×32000] = 32.77M params. Factored
+[1024×768] + [768×32000] = 25.37M params — 23% reduction vs. direct.
+Why 768 bottleneck (not 512): 512 was empirically too tight in Rev 2 and constrained
+vocab prediction expressiveness. 768 widens the output bottleneck for a cheap,
+measurable token-prediction improvement. Cost: +8.47M params relative to a 512
+bottleneck, well-spent. (This same evidence — 512 too tight at the output — informs the
+input embedding choice of 512 over 256; see Section 4.2.)
+Why not weight tying: asymmetric dims (input embedding 512→1024, output
+1024→768→32K) preclude tying.
+6.4 Coda Parameter Summary
+1 coda layer = ~13.95M
+final RMSNorm = ~0.001M
+factored unembedding = ~25.37M
+─────────────────────────────────
+Coda total = ~39.32M
+7. Training Configuration
+7.1 Optimizer (Hybrid Muon + AdamW)
+type = Hybrid (Muon for hidden weights, AdamW for everything else)
+implementation = KellerJordan/Muon (pure PyTorch, Windows 11 compatible)
+Avoid Flash-Muon variant — Triton default has poor Windows support
+── Muon (hidden 2D weight matrices, full-rank, unconstrained) ────
+applies_to = Prelude attention proj matrices (Q, K, V, O)
+Prelude FFN matrices (gate, up, down)
+Coda MLA proj matrices
+Coda FFN matrices (gate, up, down)
+Core MLA q_proj, kv_compress, kv_decompress, o_proj
+Toroidal sheet proj_up, proj_down
+Toroidal expert FFNs (gate, up, down per expert)
+lr = 0.02
+weight_decay = 0.01
+momentum = 0.95
+num_ns_steps = 5 # Newton-Schulz iterations
+scale_mode = "spectral" # enables LR transferability from AdamW
+use_syrk = False # SM 8.6 (RTX 3090) not in Triton SYRK support list
+── AdamW (everything else) ───────────────────────────
+applies_to = Input embeddings (factored A, B)
+Output unembedding (contract_proj, unembed_proj)
+All RMSNorm weights (1D — Muon requires ndim ≥ 2)
+LIE embeddings (loop index table)
+Sink token embeddings
+LTI A, B diagonals (1D, spectral-constrained)
+Early exit probe linear
+Overlap aggregation scalars
+lr = 3e-4 # cosine decay → 3e-5
+weight_decay = 0.1
+beta1 = 0.9
+beta2 = 0.95
+eps = 1e-8
+grad_clip = 1.0 # applied to all parameter groups
+Why hybrid Muon + AdamW: Muon orthogonalizes gradient updates via Newton-Schulz
+iterations, producing ~20–35% sample efficiency gains over AdamW on LM training.
+DeepSeek V4 uses this same hybrid pattern (Muon for hidden weights, AdamW for
+embeddings/norms) at trillion-parameter scale; it has been validated for stable convergence
+at scale.
+Why exclude embeddings, RMSNorm, etc.: Muon is designed for full-rank 2D weight
+matrices. Embeddings and unembedding require stable token-space updates (DeepSeek’s
+hybrid pattern explicitly excludes these). RMSNorm weights are 1D and Muon’s ndim ≥ 2
+requirement excludes them automatically.
+Why FLOP overhead is negligible: per Keller Jordan’s empirical analysis, Muon adds <1%
+FLOP overhead in typical LM training. The Newton-Schulz iterations are cheap matrix ops
+relative to forward/backward pass.
+Why Windows compatibility matters: development environment is Windows 11. Standard
+Muon (KellerJordan/Muon) is pure PyTorch — works wherever PyTorch+CUDA works. Flash-
+Muon’s Triton default does not work reliably on Windows. RTX 3090 is SM 8.6, so
+use_syrk=False is required; the code falls back gracefully.
+v1 simplicity note: with mHC and depth-wise LoRA excluded, the optimizer landscape is
+two regimes (Muon, AdamW) instead of four (Muon, AdamW, Riemannian SGD on Stiefel,
+AdamW with LoRA LR multiplier). Convergence debugging is correspondingly simpler.
+7.2 Weight Initialization Summary
+Block Init scheme σ value
+Input embeddings Standard normal 0.02
+Sink tokens Standard normal 0.02
+Prelude layers (×6) Depth-scaled 0.02/√12 ≈ 0.00577
+Core MLA Standard normal 0.02
+Expert FFNs Staggered normal 0.02 + δ×expert_idx, δ=0.001
+Proj up/down Depth-scaled 0.02/√2 ≈ 0.01414
+LTI A diagonal Constant 0.9
+LTI B diagonal Constant 0.1
+Overlap weights Uniform per-cell 0.5 (edge), 0.25 (corner)
+Coda layer Depth-scaled 0.02/√2 ≈ 0.01414
+Unembedding Standard normal 0.02
+7.3 Loss Function
+main_loss = cross-entropy next-token prediction
+aux_probe_loss = BCE(probe_output, convergence_target) × λ=0.1
+convergence_target = 1.0 if loss[t] - loss[t+1] < ε=0.001 else 0.0
+total_loss = CE + 0.1 × BCE_probe (Phase 2 only)
+7.4 Gradient Strategy
+strategy = truncated BPTT
+K = 8 loop_detach stop_grad_e = True # backprop through last 8 of 16 loops
+= h.detach() at loop R-K (loop 8)
+# e.detach() in LTI injection every loop
+grad_checkpoint = True # recompute activations, don't store all
+Why truncated BPTT K=8: full BPTT (16 loops) stores 16× activations — memory
+prohibitive. K=8 halves activation memory while providing sufficient gradient signal for core
+weight learning. Early loops (0–7) receive indirect gradient via the LTI chain. v1
+simplification note: with depth-wise LoRA removed, K=8 no longer creates the
+asymmetric-LoRA-training problem flagged in the RTCC2 Rev 3 critique. The remaining core
+weights are shared across all loops, so K=8 trains them on signal from loops 8–15 with no
+per-loop credit-assignment hole.
+Why stop-grad on e: e re-injected R times — without stop-grad, gradient flows back
+through prelude R times per step. Prohibitive compute and destabilizing. Prelude receives
+gradient only from its own forward pass output.
+7.5 Phased Training Schedule
+Phase 1:
+seq_len = 2,048
+tokens = 10B
+batch_size = 32
+grad_accum = 4 # effective batch = 128
+warmup_steps = 2,000
+scheduler = cosine decay
+prelude_frozen = False # full training all blocks
+early_exit_probe = frozen
+yarn_scale = 1 # no extension yet
+est_throughput = ~70,000–95,000 tokens/sec
+(lower than v1 draft due to 6× prelude FFN)
+est_time = ~28–40 hours
+Phase 2:
+seq_len = 8,192
+tokens = 5B
+batch_size = 16
+grad_accum = 4
+warmup_steps = 500
+prelude_frozen = True # freeze prelude — local encoding unchanged
+early_exit_probe = unfrozen # begin probe training
+yarn_scale = 4
+est_throughput = ~22,000–35,000 tokens/sec
+est_time = ~40–63 hours
+Total tokens = ~15B
+Total est. time = ~2.7–4.0 days on single RTX 3090
+Why two phases not three: v1 deliberately excludes 16K-context training. Reasoning: (1)
+the toroidal sheet contribution is independent of context length; (2) DSA, which makes 16K
+viable on a 3090 with R=16 loops, is deferred to v2; (3) running full-MLA at 16K with R=16 is
+wallclock-prohibitive. YaRN at scale=4 supports inference-time extension to ~32K without
+retraining for the rare evaluation that needs it.
+Why phased training: prelude SWA W=2048 means local encoding — no benefit retraining
+prelude at longer context. Core MLA learns to use long-range signal better with longer
+sequences. Probe frozen Phase 1 (unstable signal), unfrozen Phase 2 (stable model).
+7.6 Evaluation
+primary_metric = perplexity (consistent with CART sweep methodology)
+eval_benchmarks = ARC-Challenge # tests multi-step reasoning directly
+LAMBADA # tests long-range recall
+HellaSwag # commonsense reasoning
+eval_cadence loop_count_eval probe_eval WikiText perplexity # language modeling baseline
+= every 500 steps (Phase 1)
+every 200 steps (Phase 2)
+= report results at R ∈ {4, 8, 12, 16}
+to demonstrate loop-depth scaling
+= report results both with probe active and with min_loops=R
+to isolate probe contribution
+7.7 Required Ablations for the Paper
+To support the v1 paper claim (“Toroidal Expert Sheet > matched-FLOP alternatives in an
+RDT”), the following ablations must run on the same data, schedule, and budget. All other
+architectural elements held constant.
+Ablation What changes What it answers
+Baseline-
+Dense
+Replace toroidal sheet with
+dense FFN at matched param
+count
+Does the torus beat a same-size dense FFN?
+Baseline-
+MoE
+Replace toroidal sheet with
+vanilla top-2-of-16 MoE at
+matched sparse FLOPs
+Does the torus beat standard MoE?
+NoOverlap
+Toroidal sheet with stride=10
+(no overlap, no torus wrap)
+Is the overlap-and-wrap mechanism load-
+bearing, or just the expert partitioning?
+No-Wrap
+Toroidal sheet with overlap
+but no torus wrap (open
+boundaries)
+Is the torus topology specifically (vs. a flat
+overlapping grid) what helps?
+NoResidual
+Remove gated residual
+bypass; sheet output
+replaces h
+Quantify the bypass’s contribution to multi-
+hop reasoning
+Overlap-2
+Toroidal sheet with overlap=2
+cells, stride=8,
+sheet=64×64=4096 dims,
+private core=6×6=36 dims
+(36%)
+Does 2-cell overlap (ML-theory sweet spot —
+conv stride 50–75% of kernel; ResNeXt
+grouped-conv group sizes; Tishby
+bottleneck ≥25%) outperform 1-cell?
+Overlap-3
+Toroidal sheet with overlap=3
+cells, stride=7,
+sheet=56×56=3136 dims,
+private core=4×4=16 dims
+Does aggressive overlap collapse expert
+specialization, or does the trend toward
+biology (1–5% intra-minicolumn) continue to
+(16%) help?
+Loop-
+count
+sweep
+RTCC v1 evaluated at R ∈ {4,
+8, 12, 16} on a fixed
+checkpoint
+Establish loop-depth scaling curve
+Note on parameter drift across overlap variants: overlap variants change
+proj_up / proj_down dims because the sheet size is determined by sheet_dim = experts ×
+stride . Overlap=2 → sheet=4096 → proj=8.38M total; overlap=3 → sheet=3136 →
+proj=6.42M total; v1 baseline (overlap=1) → sheet=5184 → proj=10.62M total. The ~2–4M
+parameter difference per ablation is documented in the paper rather than compensated for;
+matching param counts via expert FFN width would introduce a separate confound
+(changing expert capacity simultaneously with overlap structure).
+Combined with NoOverlap: the overlap sweep covers private fractions {100%, 64%, 36%,
+16%} — directly testing the conv-literature, ResNeXt grouped-conv, and information-
+bottleneck recommendations against the biological 1–5% intra-minicolumn estimate. The
+disagreement between ML theory (25–40% private optimal) and biology (1–5% private) is
+principled — biology can afford low private % because neurons fire sparsely (~95% silent at
+any moment, low interference in shared dims) while RTCC’s experts are always-active
+(worst case for shared-dim interference per superposition theory). The sweep empirically
+locates RTCC’s optimum within this tension.
+Ablation budget: seven ablations × ~3.5 days each = ~25 days of training time. Plus the
+headline RTCC v1 run (~3.5 days). Total: ~28 days, runnable as a back-to-back queue on
+one 3090. This is the budget against which v1 was scope-reduced.
+8. Training Data Composition
+Source / Type
+%
+Phase
+1
+%
+Phase
+2
+Rationale
+Web text (Common Crawl filtered,
+C4-quality)
+30% 25% Broad language, general
+reasoning
+Books (fiction + nonfiction) 15% 15% Long coherent narrative, long-
+range deps
+Code (GitHub, StackOverflow) 15% 13% Structured reasoning, precise
+logic
+Scientific papers (arXiv, PubMed) 10% 10% Multi-step reasoning, technical
+language
+Mathematics (proof corpora,
+GSM8K-style)
+8% 12% Explicit reasoning chains, CoT
+patterns
+Wikipedia + encyclopedic 7% 7% Factual grounding, structured
+knowledge
+Dialogue / instruction pairs 6% 5% Instruction following,
+conversational
+Reasoning traces / CoT datasets 5% 10% Directly trains loop-depth
+reasoning
+Legal / formal documents 2% 2% Precise language, long
+structured arguments
+Multilingual text 2% 1% Basic cross-lingual coverage
+Total 100% 100%
+Code and math overweighted relative to natural corpus proportion — both exercise iterative
+reasoning the loop architecture is optimized for. CoT traces upweighted Phase 2 to
+maximize long-context reasoning signal during context extension. Web text filtered to C4-
+quality minimum. Multilingual kept minimal — Llama-2 tokenizer is English-dominant; 32K
+vocab limits multilingual efficiency.
+Consistency with ablations: all baseline and ablation runs use the identical data mix,
+ordering, and seed schedule as the headline RTCC v1 run. This is non-negotiable for the
+paper claim.
+9. Architecture Decision Reference
+Decision Choice Key Reason
+Tokenizer
+Llama-2 BPE
+32K Consistency with CART; well-tested
+d
+_
+model 1024 Fits 32×32 native sheet; expanded to 5,184
+Input Factored 512 Param savings vs. direct + adequate token-identity
+expressivity (256 likely tight per Rev 2 unembedding
+embedding Prelude depth
+P
+Loop count R Coda depth Prelude
+attention Core
+attention
+Coda
+attention
+Flash
+Attention
+Sliding
+window Window size Sink tokens
+RoPE
+Expert sheet
+Sheet dims Patch size
+Patch stride Expert FFN
+bottleneck evidence)
+6 CART experimental finding
+16 Beyond CART R=8; VRAM allows; depth via loops
+1 CART experimental finding
+GQA Richer e encoding; MLA savings wasted in single-pass
+MLA KV cache × R loops — compression critical
+MLA Consistency; single pass KV pressure still real
+All attention
+layers
+2–3× speedup; critical at 8K seq
+Prelude only Prelude needs local encoding; core MLA needs full recall
+~8× FLOPs reduction on dominant prelude attention
+2,048
+cost
+64 learned
+prefix Stable global aggregation; content-independent
+YaRN
+base=500K
+scale=4
+Inference extension to ~32K; per-dim interpolation
+Toroidal
+8×8=64
+experts
+Symmetric torus; no axis bias; cortical column analogy
+5,184 (72×72) 64 experts × stride 9² = clean tiling; square grid
+10×10 incl.
+overlap
+8×8=64 private dims; sufficient subspace per expert
+9 patch_
+size − overlap = 10 − 1 = 9
+100 → 256 →
+100 Input/output full patch; hidden expands subspace
+Expert
+residual Gated bypass h preserved via LTI; proj_down carries only delta
+Expert init Staggered
+δ=0.001 Breaks symmetry; prevents expert collapse
+Proj dims 1024 ↔ 5,184 Minimum to fit sheet; ~10.62M params total
+LIE
+16
+embeddings ×
+1024
+Loop depth awareness; only loop-symmetry-breaker in
+v1
+LTI A=0.9, B=0.1,
+stop-grad e Stable grounding; prevents prelude gradient explosion
+Early exit min=4,
+threshold=0.95 Latency reduction on easy tasks; quality preserved
+Truncated
+BPTT
+K=8, stop-grad
+Memory feasible; sufficient gradient signal
+e
+Dropout 0.0 Implicit regularization sufficient; CART validated
+Prelude FFN 6× expansion R-fold leverage of e re-injection — highest-leverage
+location for factual capacity
+Coda FFN 4× expansion No re-injection leverage; conservative v1 default; 6×
+becomes v2 ablation
+Unembedding
+Factored 768
+bottleneck 23% param saving vs. direct; output quality
+Optimizer Hybrid Muon +
+AdamW 20–35% sample efficiency over pure AdamW
+Weight init Depth-scaled
+prelude/coda Prevents variance explosion at P=6
+Context
+window
+8K max train;
+32K inference DSA-free zone; long context deferred to v2
+Probe training Frozen Phase 1 Model unstable Phase 1; probe learns bad patterns
+10. Key Files and References
+CART baseline: https://github.com/ccapps42/CART
+RTCC repo: https://github.com/ccapps42/RTCC (this architecture, MIT license, weights
+on HuggingFace Hub)
+OpenMythos (RDT reference): open-source reconstruction of RDT architecture
+Hyperloop Transformer paper: April 2026 — looped middle block validation
+YaRN paper: per-dimension RoPE interpolation for context extension
+MLA (DeepSeek-V2): Multi-head Latent Attention, KV compression
+Flash Attention 2: memory-efficient attention implementation
+GQA paper: Grouped Query Attention, KV head sharing
+Muon optimizer: KellerJordan/Muon — Newton-Schulz orthogonalized momentum
+(Jordan et al. 2024)
+DeepSeek V4 (April 2026): validates hybrid Muon + AdamW pattern at trillion-
+parameter scale
+Geva et al. 2021 (“Transformers are Key-Value Memories”): mechanistic interpretability
+evidence that factual associations live in FFN weights (motivates prelude FFN
+expansion)
+Xiao et al. 2023: attention sinks (basis for learned sink token approach in prelude)
+11. Deferred to v2
+The following architectural elements were evaluated for inclusion in v1 and deferred. This
+section documents what was deferred, why, and the conditions under which each is
+reconsidered for v2.
+11.1 SSM (Mamba-style) in core
+Status: Deferred to v2.
+v1 rationale: SSM contribution is unmeasured at this scale. Including it confounds the
+toroidal sheet ablation — if RTCC v1 with SSM beats baseline, attribution between SSM and
+torus is unclear without an additional ablation slot.
+Reconsider when: v1 paper has landed; v2 ablation budget can include “RTCC + SSM” as a
+clean comparison against baseline RTCC. Particularly relevant if v2 extends to long context
+where SSM’s O(n) accumulation has structural value.
+11.2 Manifold-constrained Hyper-Connections (mHC)
+Status: Deferred to v2.
+v1 rationale: mHC adds Riemannian SGD on a Stiefel manifold to the optimizer mix, raising
+the count of optimizer regimes from two to four. At this scale, the optimization-complexity
+cost is not justified by measured gain (it is unmeasured). Cross-loop memory in v1 is
+provided by LTI injection of e, which is both simpler and load-bearing for stability.
+Reconsider when: v2 includes long-context training where cross-loop memory pressure
+increases, or when scaling to ≥1B params where mHC’s published gains were observed.
+11.3 Depth-wise LoRA per loop per expert
+Status: Deferred to v2.
+v1 rationale: depth-wise LoRA per loop interacts badly with truncated BPTT K=8 — early-
+loop LoRAs (loops 0–7) receive gradient only through the LTI chain and undertrain relative
+to late-loop LoRAs (loops 8–15). Either fix (drop early-loop LoRAs, increase K, or drop LoRA
+entirely) is a v2 design decision.
+Reconsider when: v2 either (a) increases K to cover all loops, (b) uses LoRA only on loops
+8–15 by design, or (c) finds that LIE alone provides insufficient loop differentiation in v1
+results.
+11.4 DeepSeek Sparse Attention (DSA)
+Status: Deferred to v2.
+v1 rationale: DSA’s published gains are at long context (≥16K) where attention cost
+dominates. v1 caps training at 8K, where full MLA is computationally tractable on a 3090
+and DSA’s lightning indexer overhead exceeds its savings. Adding DSA to v1 would mean
+training the indexer on a model that doesn’t need sparsity — a clean way to introduce a
+confounder.
+Reconsider when: v2 extends training to ≥16K context. At that scale DSA becomes
+structurally necessary on a 3090 and its inclusion is well-motivated. The DeepSeek
+V3.1→V3.2 continued-training pattern (warm up indexer on stable checkpoint, then
+unfreeze) is the validated approach.
+11.5 Engram Conditional Memory
+Status: Deferred to v2 or beyond (carried forward from RTCC2 Rev 3 deferral).
+v1 rationale: Engram was validated at 27B params; gains may not translate to ~200M.
+Prelude FFN at 6× expansion already targets factual breadth aggressively. Including Engram
+in v1 would replace rather than add, restructuring work without clear marginal benefit at this
+scale.
+Reconsider when: scaling beyond 1B params (e.g., the planned 4096-dim full architecture
+build), or when training data shifts toward encyclopedic content (>20%
+Wikipedia/reference). Recommended placement: in the prelude between input embedding
+and SWA layer 1, with the Engram embedding table sized to claim 20–25% of total params
+per the Sparsity Allocation Law.
+11.6 16K Context (Phase 3)
+Status: Deferred to v2.
+v1 rationale: entangled with DSA deferral above. Without DSA, full MLA at 16K with R=16
+loops is wallclock-prohibitive on a 3090.
+Reconsider when: simultaneously with DSA inclusion in v2.
+11.7 Coda FFN 6× expansion
+Status: Deferred to v2 ablation.
+v1 rationale: RTCC2 Rev 3 specified 6× for “output expressivity,” but this was qualitative
+and unablated. The leverage argument that justified upsizing the prelude FFN to 6× does
+not extend to the coda — prelude e is re-injected R=16 times so factual capacity there
+compounds 16-fold; coda runs once at the end with no re-injection. The asymmetric
+leverage makes the unablated jump less defensible at the output, so v1 holds coda at 4× as
+the conservative default.
+Reconsider when: v2 ablation slot available for “RTCC + coda 6×” vs. “RTCC + coda 4×”
+comparison. If prelude 6× shows clear benefit in v1 results, that increases the prior on coda
+6× being worth testing — but the magnitude is expected to be smaller because of the
+missing re-injection multiplier.
+11.8 TIE — Token Index Embedding re-injection per recurrent loop
+Status: Deferred to v2.
+Concept: Re-inject token positional information at every recurrent loop iteration as an
+additive signal to the hidden state, in addition to the position information already carried in
+via attention’s RoPE. Each loop iteration would receive h_t + TIE(token_position) , giving
+the recurrent core depth-aware position sensitivity rather than depth-invariant position
+sensitivity. Biological analog: beta-band rhythm — sequence-position modulation of cortical
+processing depth.
+What it would buy if included: the recurrent-depth architecture’s structural weakness is
+that all R loop iterations see identical positional context — position was injected once at the
+embedding layer and decays as it propagates. TIE re-injection lets the core learn iteration-
+by-position specialization (e.g., loop 12 might attend differently to early-sequence positions
+than loop 4). Cost is near zero — small projection of an existing signal — and
+implementation risk is very low.
+Closest prior art: Universal Transformer (Dehghani et al., ICLR 2019) injects both step
+embedding and positional embedding at each step, though framed as a single combined
+addition before the block rather than as two separate additive injections into hidden state
+mid-block.
+v1 rationale: LIE is the only loop-symmetry-breaking mechanism in v1 (depth-wise LoRA
+having been excluded). Adding TIE would consume an ablation slot to prove its independent
+contribution and would weaken the “minimum architecture for the central claim” framing.
+Universal Transformer precedent means TIE is not a novelty contribution; it is a
+stability/expressivity addition.
+Reconsider when: v1 results show LIE alone provides insufficient loop differentiation (e.g.,
+loops 4–15 produce nearly identical hidden states on a probe), or v2 introduces
+architectural elements where per-loop position awareness becomes structurally necessary.
+11.9 Sliding Window Buffer (Buffer_alpha)
+Status: Deferred to v2.
+Concept: A fixed-size compressed summary of the last K tokens (e.g., K=7) held frozen
+between updates, then refreshed with a new compressed summary every K tokens. The
+frozen buffer is injected additively into every recurrent loop iteration, providing a stable
+always-present context signal that does not compete with attention for token-level retrieval.
+Biological analog: alpha-band rhythm — gating of local processing windows; the strongest
+and most-studied cortical oscillation effect on cognition.
+What it would buy if included: transformers with causal attention struggle most at the
+clause/phrase boundary — the 5–10 token window where syntactic structure closes and
+opens. Attention can reach back 7 tokens, but it competes with all other tokens for attention
+weight. A frozen 7-token compressed buffer is always present, zero competition cost. This
+is the timescale where grammatical agreement, verb-argument binding, and local
+coreference live. Expected observable effect: measurable perplexity drop on grammatical
+coherence evals, subject-verb agreement, and pronoun resolution within sentences.
+Closest prior art: Block-Recurrent Transformer (Hutchins et al., NeurIPS 2022) — explicit
+recurrent state updated every fixed block of tokens, the closest match. Compressive
+Transformer (Rae et al., ICLR 2020) — explicitly compresses past activations into fixed-size
+memory. Memorizing Transformers (Wu et al., ICLR 2022). Multi-rate variants are
+anticipated by Clockwork RNN (Koutník et al., ICML 2014) — modules update at different
+fixed rates.
+v1 rationale: The buffer is a known mechanism with strong prior art. Adding it to v1 would
+confound the toroidal-sheet ablation — gains could be attributed to the buffer rather than
+the sheet — and would add an expensive ablation slot to demonstrate decomposition.
+Reconsider when: v2 has cleared its primary novelty claim and the multi-frequency /
+cortical-rhythm framing becomes a paper subject in its own right, or v1 results show clause-
+level coherence (subject-verb agreement, local pronoun resolution) underperforming
+matched-FLOP baselines.
+11.10 Hierarchical State Carry (HSC bands)
+Status: Deferred to v2 or later.
+Concept: A family of EMA-compressed running states updated at multiple rates and
+injected per-loop:
+Band Update
+interval
+EMA
+α
+Effective
+memory
+Covers
+HSC
+_
+fast every 1 token 0.85 ~7 tokens Local syntax, in-context running
+summary
+HSC
+mid _
+every 37
+tokens
+0.30 ~123 tokens Paragraph opening / topic
+HSC
+slow _
+every 127
+tokens
+0.50 ~254 tokens Multi-paragraph
+HSC
+_deep every 503
+tokens
+0.30 ~1,677 tokens Section / document
+HSC
+ultra _
+every 2,003
+tokens
+0.20 ~10,000
+tokens
+Book-scale
+Each band is a fixed-size hidden vector; updates are HSC = (1-α) × HSC + α ×
+compress(h_t) at the band’s interval; injection is h = h + proj_band(HSC_band) at each
+recurrent iteration. Biological analog: theta / delta cortical rhythms — slow cortical state
+(arousal level, global processing mode) running underneath the sharp retrieval mechanism
+of attention.
+What it would buy if included: an always-present compressed signal that does not require
+the model to “decide to attend” to distant tokens, carrying a bias about cumulative state
+into every recurrent iteration. Attention handles specific retrieval; HSC handles the cortical
+tide. Information flows upward through the hierarchy: HSC_fast compresses every token,
+Buffer
+_alpha is a chunk of ~7 HSC_fast states, slower bands span multiple faster-band
+updates — so HSC_slow’s effective receptive field is much larger than its update interval if
+lower levels pass useful compressed signal upward. HSC_fast specifically is most valuable
+for in-context learning and example tracking — the model accumulates a running sense of
+“what this prompt has established so far.”
+Closest prior art: Multi-timescale RNN (El Hihi & Bengio, NeurIPS 1995) — earliest explicit
+multi-rate hierarchical state. Clockwork RNN (Koutník et al., ICML 2014) — sub-networks at
+different fixed clock rates, the most direct conceptual ancestor. Compressive Transformer
+2020 — fixed-size memory of compressed past activations.
+v1 rationale: components are well-known. Slow bands (HSC_slow at 127 tokens, HSC_deep
+at 503, HSC_ultra at 2003) require longer training sequences than v1’s data mix to receive
+meaningful gradient signal — most v1 training samples will not span enough tokens for slow
+bands to update more than 2–3 times. Including the full family in v1 would muddy the
+toroidal-sheet attribution.
+Reconsider when: v2 extends to ≥16K context (alongside DSA) and the data mix shifts
+toward genuinely long documents (book chapters, multi-document QA), making slow-band
+gradient signal viable. HSC_fast may move earlier in the v2 backlog if v1 attention turns out
+to be insufficient for in-context running summary.
+11.11 Two-Level Toroidal Hierarchy (1024-dim post-loop top-k sheet)
+Status: Deferred to v2 — candidate for its own paper.
+Concept: A second toroidal sheet at the 1024-dim level, placed after the recurrent loop,
+with top-k routing rather than always-on. Geometry: 32×32 grid, 9×9 patches with 1-cell
+overlap, stride 8, 16 experts in a 4×4 expert grid. Each of the 16 macrocolumn experts is the
+geometric integration point for exactly 4 of the 64 minicolumn experts on the level-1 (5184-
+dim) sheet — the 4:1 spatial compression ratio is exact. With k=4 active experts per token
+(recommended starting point), 25% of the upper sheet’s output is selectively integrated per
+token; the router learns which spatial regions of the toroidal representation matter for a
+given token’s final output.
+What it would buy if included:
+1. Content-adaptive final transformation — the toroidal sheet inside the loop applies the
+same transformation structure to every token regardless of content. The top-k layer is
+the first point in the architecture where a token’s content explicitly determines which
+transformation is applied. Function words and rare technical terms can route to
+differently specialized experts.
+2. Hierarchical spatial compression with specialization — each top-k expert has
+learned to compress and transform a specific region of the 5184-dim representational
+space into the 1024-dim residual stream. The router learns which regions of that space
+matter for a given token’s final representation — learned dimensional routing, not just
+token routing.
+3. Sparsity as implicit regularization — k < 16 forces each expert to specialize or become
+redundant and stop being selected. Switch Transformer / GLaM findings: sparse expert
+layers at the output stage tend to improve sample efficiency.
+4. Decoupled loop and output optimization — without this layer, the loop must
+simultaneously produce a good recurrent state for further iterations AND a good final
+representation for the coda. The top-k layer separates these concerns: loop optimizes
+for good recurrent state; top-k handles output preparation.
+5. Soft ensemble of converged representations — k different spatial compressions
+integrated per token gives ensemble-like robustness without the ensemble cost.
+Effective receptive field calculation: an upper expert directly sees 100 of 5184 dims
+(1.9%). A lower expert directly receives 4 × 100 = 400 dims (7.7%); via shared borders and
+neighboring lower experts compressing 4 upper experts each, indirect receptive field
+reaches ~1600 of 5184 (~31%). The lower sheet expands effective receptive field from ~2%
+to ~31% in one compression step — genuine global integration emerging from local spatial
+structure.
+Why post-loop, not inside loop: inside loop pays top-k cost × R iterations (prohibitive on
+RTX 3090); router instability interacts with recurrent dynamics; shared border dim
+communication breaks if adjacent experts don’t both fire. Post-loop runs once (cheap), sees
+fully converged representation (stable routing), and gives clean separation of
+responsibilities.
+Does it conflict with coda MLA? No — orthogonal mechanisms. Top-k MoE: per-token
+content-adaptive FFN transformation (no cross-token mixing). Coda MLA: cross-token self-
+attention (no content-adaptive routing). Same division of labor as FFN + attention in
+standard transformer blocks. One interaction to monitor: tokens that should attend to each
+other in coda MLA may route to different top-k experts, creating representational “dialects.”
+Mitigation: routing-consistency auxiliary loss penalizing adjacent tokens routing to
+completely disjoint expert sets.
+Closest prior art: Hierarchical MoE (Riquelme et al.) — two-level expert hierarchy but
+routing-based, not position-fixed, not spatial. Feature Pyramid Networks (Lin et al., 2017) —
+multi-scale spatial hierarchy but vision only, no expert structure. U-Net (Ronneberger et al.,
+2015) — encoder compression + skip, but vision, no MoE, no toroidal structure. Perceiver
+(Jaegle et al., 2021) — high-to-low compression but via attention, not spatial. Switch
+Transformer — single level, routing-based, no spatial structure. The geometrically-
+consistent two-level toroidal hierarchy with 4:1 spatial compression has no direct prior art.
+v1 rationale: this is a distinct novelty claim by itself. Folding it into v1 produces a paper with
+two simultaneous novelty claims; reviewers cannot cleanly attribute gains between the
+level-1 toroidal sheet (the v1 claim) and the level-2 hierarchy. It also strains the v1 ablation
+budget: a “RTCC + standard top-k MoE post-loop” baseline becomes necessary to isolate
+the toroidal-hierarchy contribution beyond standard MoE.
+Reconsider when: v1 has landed and v2 is being scoped — at that point the two-level
+hierarchy can be the v2 central claim, with v1’s toroidal sheet as the validated foundation.
+The geometry extends cleanly to a third level (256-dim, 2×2=4 experts, hypercolumns) that
+maps onto the known three-level cortical hierarchy (minicolumn → macrocolumn →
+hypercolumn); that is v3 territory.
+11.12 Phase Coupling Gate (cross-frequency modulation)
+Status: Deferred to v2 or later.
+Concept: Use a slow state (HSC_
+mid or HSC
+_slow) to gate the amplitude of a fast signal
+(LIE). Implementation: lie_scale = sigmoid(gate_proj(HSC_mid)) ; then h = h + LIE(r) ×
+lie_scale . Slow context modulates how strongly the depth signal is expressed at each
+loop. Biological analog: cross-frequency phase-amplitude coupling — gamma amplitude
+modulated by theta phase — the most sophisticated and best-studied feature of cortical
+oscillation interaction.
+What it would buy if included: very few parameters added, potentially high expressivity
+gain. Lets the network learn that depth-signal strength should depend on global context
+state (e.g., late in a long document the slow band is rich and depth signal is amplified; early
+in a short prompt the depth signal is dampened to avoid overprocessing).
+v1 rationale: highest-fidelity biological mechanism evaluated, but also the highest stability
+risk. It is parasitic on the HSC bands (themselves deferred), and the cross-frequency
+interaction can create training instabilities that are hard to diagnose at small scale.
+Reconsider when: HSC bands are stable in v2 and the multi-frequency framing has
+produced clean ablation results. Phase coupling becomes the natural “completing the
+cortical analogy” addition for v3 or a follow-up paper.
+11.13 Aggressive Overlap (≥4 cells)
+Status: Deferred to v2.
+Concept: Push the toroidal sheet’s overlap beyond v1’s sweep range. At overlap=4 with
+10×10 patches, private core = 2×2 = 4 dims (4% private), approaching the biological 1–5%
+intra-minicolumn estimate. This tests the extreme low-private-fraction regime motivated by
+the cortical column literature, where the minicolumn is better understood as a
+developmental and functional unit (shared tuning, common input) than as a synaptic
+isolation unit.
+What it would buy if included: direct test of the biology-dominant hypothesis against the
+superposition-theory argument. Biology can afford low private % because neurons fire
+sparsely (~95% silent at any moment, low interference in shared dims). RTCC’s experts are
+always-active, which makes shared-dim interference structurally worse. If overlap=4 still
+wins, it suggests the toroidal sheet’s representational capacity is dominated by lateral
+communication rather than per-expert specialization — a strong biological-fidelity result.
+v1 rationale: v1’s overlap sweep covers {0, 1, 2, 3} cells, spanning private fractions {100%,
+64%, 36%, 16%} — the ML-theory consensus zone (conv overlap, ResNeXt grouped conv,
+bottleneck minimum). Overlap=4 is a separate hypothesis (biology-dominant, against the
+superposition argument). Adding it inflates the v1 ablation budget to test a hypothesis that
+ML theory alone considers unlikely to win.
+Reconsider when: v1 results show overlap=3 outperforming overlap=2 (the trend continues
+into the biologically-faithful regime), or v2 adds a sparsity mechanism to the level-1 toroidal
+sheet that resolves the always-on superposition concern.
+12. Summary
+RTCC v1 is the minimum architecture that supports the central paper claim — the Toroidal
+Expert Sheet, used as the FFN replacement inside the recurrent core of an RDT, beats
+matched-FLOP alternatives. Every architectural element in v1 is either part of the novel
+contribution (toroidal sheet, cortical column analogy, expanded sheet projection with gated
+residual, symmetric square grid, RDT integration, sink tokens), structurally necessary for the
+architecture to function (LIE for loop symmetry breaking, LTI for stability, MLA for KV-cache
+tractability across R loops), or a well-validated, low-cost engineering choice (hybrid Muon +
+AdamW, GQA in prelude, FA2 throughout, factored embeddings, depth-scaled init).
+Two prelude sizings were upsized from initial v1 draft values based on the leverage
+argument that e is re-injected R=16 times into the recurrent core: input embedding
+bottleneck 256 → 512 (cost +8.4M real params) and prelude FFN expansion 4× → 6× (cost
++37.7M real params). Both upgrades land in single-pass components where the cost is
+upfront but the benefit compounds R-fold via e re-injection. Coda FFN is held at 4× because
+it does not benefit from this leverage — it runs once at the end with no re-injection
+multiplier.
+Five elements that appeared in RTCC2 Revision 3 are deferred to v2 with explicit
+reconsideration conditions: SSM, mHC, depth-wise per-loop LoRA, DSA, and 16K-context
+training. Each was excluded for a specific reason: confounded ablation attribution (SSM),
+optimizer complexity disproportionate to scale (mHC), structural gradient asymmetry under
+truncated BPTT (depth-wise LoRA), or scope entanglement with long-context training that
+itself is deferred (DSA, 16K).
+Six additional elements emerged from the cortical-column / frequency-mechanism analysis
+and are documented in Sections 11.8–11.13: TIE, Buffer_alpha, the HSC band family, the
+two-level toroidal hierarchy with 4:1 spatial compression, phase coupling, and aggressive
+overlap (≥4 cells). Each has the same scope-discipline rationale: confounded attribution,
+prior-art mechanism that doesn’t carry the paper, or a novelty claim of sufficient size to
+deserve its own paper.
+The result is a 202M-real / 457M-effective architecture, a ~15B-token training run
+completing in ~3.5 days on a single RTX 3090, and an ablation matrix of seven baselines
+completing in ~25 additional days — a total v1 paper budget of roughly four weeks of GPU
+time. The paper claim is sharp and the evidence is clean.
+— Chad A. Capps, May 2026 (RTCC v1)

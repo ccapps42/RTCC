@@ -1,0 +1,24 @@
+# S2: RTCC — 1-cell overlap, stride=3, patch=4x4, 64 experts, 25.0% privacy (Pair A)
+# private_side=2, private_dims=4
+# 500M tokens: 15259 steps x 4 batch x 8 grad_accum x 1024 seq = 500,006,912 tokens
+model_dim: 576
+n_heads_prelude: 9
+n_heads_recurrent: 9
+n_heads_coda: 9
+mla_latent_dim: 144
+max_seq_len: 1024
+prelude_layers: 6
+coda_layers: 1
+max_loop_iters: 8  # TBD — lock once CART Stage 2 settles R at d=512/768
+total_steps: 15259
+warmup_steps: 500
+batch_size: 4
+grad_accum_steps: 8
+hardware: rtx3090
+run_name: paper_576/S2_rtcc_25pct_1cell
+# Toroidal grid — expert_hidden TBD (512 recommended; ablate if needed)
+grid_rows: 24
+grid_cols: 24
+patch_size: 4
+stride: 3
+expert_hidden: 512

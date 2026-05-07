@@ -89,17 +89,11 @@ def register_run(cfg, config_path: str) -> int:
     return run_id
 
 
-def build_data_iter(cfg, tokenizer):
-    from shared.data.loader import load_hf_dataset, TokenizedStream
-    from shared.data.packing import PackedDataset
-    from shared.data.curriculum import CURRICULUM
+def build_data_iter(cfg):
+    from shared.data.loader import FixedOrderDataset
     from torch.utils.data import DataLoader
-
-    phase = CURRICULUM[0]
-    hf_ds = load_hf_dataset(phase.dataset)
-    token_stream = TokenizedStream(hf_ds, tokenizer)
-    packed = PackedDataset(token_stream, cfg.max_seq_len, tokenizer.eos_token_id)
-    return DataLoader(packed, batch_size=cfg.batch_size)
+    ds = FixedOrderDataset(seq_len=cfg.max_seq_len)
+    return DataLoader(ds, batch_size=cfg.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
 
 def main():
@@ -145,7 +139,7 @@ def main():
     else:
         from shared.training.trainer import Trainer as TrainerCls
     trainer = TrainerCls(model, cfg, run_id)
-    data_iter = build_data_iter(cfg, tokenizer)
+    data_iter = build_data_iter(cfg)
     trainer.train(data_iter)
 
 

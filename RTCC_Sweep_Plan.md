@@ -1,6 +1,6 @@
 # RTCC Sweep Plan — d=576
 **Paper 2: Recurrent Toroidal Cortical Columns (Capps, 2026)**  
-Last updated: 2026-05-03
+Last updated: 2026-05-07
 
 ---
 
@@ -60,16 +60,16 @@ The ToroidalMoE expert MLP is: `patch_dims → expert_hidden → patch_dims` (Sw
 
 ### 2. Token budget per sweep run
 
-Briefing doc assumed 200M tokens per sweep run, 1B tokens for the final benchmark run. Confirm before starting.
+**Locked: 500M tokens per sweep run.** 200M is borderline for detecting subtle differences (e.g., toroidal vs. flat boundary, adjacent privacy configs). At 500M, the privacy curve ordering stabilizes, pair comparisons are meaningful, and expert specialization has time to emerge. Each run takes ~1.7h at d=576 R=8; total sweep = ~19h for all 11 runs.
 
-### 3. Sequence length curriculum
+### 3. Sequence length
 
-Confirm whether RTCC sweep runs inherit CART's full curriculum (max seq=1024) or use an abbreviated schedule (e.g., max seq=512) to reduce per-run cost. Shorter schedule = faster sweep; longer = more comparable to CART baselines.
+**Locked: seq_len=1024**, matching CART Stage 2. CART's stage2_train.bin was interleaved in 1024-token chunks; using 512 would split documents at wrong boundaries. Same effective batch as CART: 4 × 8 × 1024 = 32,768 tokens/step.
 
 ### 4. Data mixture
 
 CART uses: 300M TinyStories + 300M Wikipedia + 400M FineWeb-Edu = 1B tokens total.  
-For sweep runs at 200M tokens each, confirm whether to use a proportional slice of the same mixture or a modified mixture (e.g., drop TinyStories for quality-focused runs).
+For sweep runs at 500M tokens each, confirm whether to use a proportional slice of the same mixture or a modified mixture (e.g., drop TinyStories for quality-focused runs).
 
 ---
 
@@ -280,7 +280,7 @@ Resolve before Phase 1.
 | # | Question | Recommendation |
 |---|---|---|
 | 1 | expert_hidden: 256, 512, or 1024? | Commit to 512, or ablate first (3 runs × 100M tokens on S7) |
-| 2 | Token budget per sweep run? | Confirm 200M |
+| 2 | Token budget per sweep run? | **Locked: 500M** |
 | 3 | Sequence length curriculum for sweep? | Confirm max seq_len |
 | 4 | Data mixture for sweep runs? | Confirm proportional slice of CART mixture or modified |
 

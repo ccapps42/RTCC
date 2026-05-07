@@ -60,7 +60,16 @@ The ToroidalMoE expert MLP is: `patch_dims → expert_hidden → patch_dims` (Sw
 
 ### 2. Token budget per sweep run
 
-**Locked: 500M tokens per sweep run.** 200M is borderline for detecting subtle differences (e.g., toroidal vs. flat boundary, adjacent privacy configs). At 500M, the privacy curve ordering stabilizes, pair comparisons are meaningful, and expert specialization has time to emerge. Each run takes ~1.7h at d=576 R=8; total sweep = ~19h for all 11 runs.
+**Locked: 500M tokens per sweep run.** 200M is borderline for detecting subtle differences (e.g., toroidal vs. flat boundary, adjacent privacy configs). At 500M, the privacy curve ordering stabilizes, pair comparisons are meaningful, and expert specialization has time to emerge.
+
+**Profiled time estimates (RTX 3090, d=576 R=8, seq=1024, batch=4, grad_accum=8):**
+- Measured throughput: **10,811 tok/s** (smoke test, 100 steps, kernels pre-warmed)
+- Per run: 15,259 steps × 32,768 tok/step ÷ 10,811 tok/s = **~12.8 hours**
+- Sequential (1 slot): 11 runs × 12.8h = **~141 hours (~5.9 days)**
+- 2 concurrent slots: ~38 hours (~1.6 days) — peak VRAM 2 × 4.95 GB = 9.9 GB
+- 3 concurrent slots: ~26 hours (~1.1 days) — peak VRAM 3 × 4.95 GB = 14.85 GB, ~9 GB headroom
+
+Use `python scripts/orchestrate_paper.py --slots 3` to run 3 concurrent with safe headroom on the 3090 (24 GB total).
 
 ### 3. Sequence length
 

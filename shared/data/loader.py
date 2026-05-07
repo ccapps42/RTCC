@@ -16,9 +16,10 @@ class FixedOrderDataset(Dataset):
     No shuffling — every run sees identical token sequences at identical positions,
     which is required for sweep comparability across architectures.
     Compatible with CART's stage2_train.bin (same Llama-2 32k tokenizer).
+    seq_len=1024 matches CART Stage 2 — the bin was interleaved in 1024-token chunks.
     """
 
-    def __init__(self, bin_path: str | Path = STAGE2_BIN, seq_len: int = 512):
+    def __init__(self, bin_path: str | Path = STAGE2_BIN, seq_len: int = 1024):
         self.data = np.fromfile(str(bin_path), dtype=np.uint16)
         self.seq_len = seq_len
         self.n_seqs = (len(self.data) - 1) // seq_len

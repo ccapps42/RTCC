@@ -12,8 +12,16 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 ARCH_MAP = {
-    "dense_ffn": ("architectures.01_dense_ffn.model", "DenseFfnModel",
-                  "architectures.01_dense_ffn.config", "DenseFfnConfig"),
+    "dense_ffn":       ("architectures.01_dense_ffn.model",       "DenseFfnModel",
+                        "architectures.01_dense_ffn.config",       "DenseFfnConfig"),
+    "standard_moe":    ("architectures.02_standard_moe.model",    "StandardMoEModel",
+                        "architectures.02_standard_moe.config",    "StandardMoEConfig"),
+    "slicemoe_flat":   ("architectures.03_slicemoe_flat.model",   "SliceMoeFlatModel",
+                        "architectures.03_slicemoe_flat.config",   "SliceMoeFlatConfig"),
+    "flat_grid_overlap": ("architectures.04_flat_grid_overlap.model", "FlatGridModel",
+                          "architectures.04_flat_grid_overlap.config", "FlatGridConfig"),
+    "rtcc":            ("architectures.05_rtcc.model",             "RTCCModel",
+                        "architectures.05_rtcc.config",             "RTCCConfig"),
 }
 
 

@@ -1,20 +1,27 @@
 """AdamW optimizer with cosine LR schedule and linear warmup."""
 import math
 import torch
-from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
 
-def build_optimizer(model: torch.nn.Module, lr_max: float, weight_decay: float) -> AdamW:
-    # Don't apply weight decay to biases and norm params
+def build_optimizer(model: torch.nn.Module, lr_max: float, weight_decay: float):
     decay_params = [p for n, p in model.named_parameters()
                     if p.requires_grad and p.dim() >= 2]
     no_decay_params = [p for n, p in model.named_parameters()
                        if p.requires_grad and p.dim() < 2]
-    return AdamW([
+    groups = [
         {"params": decay_params, "weight_decay": weight_decay},
         {"params": no_decay_params, "weight_decay": 0.0},
-    ], lr=lr_max, betas=(0.9, 0.95), eps=1e-8)
+    ]
+    try:
+        from bitsandbytes.optim import AdamW8bit
+        optimizer = AdamW8bit(groups, lr=lr_max, betas=(0.9, 0.95), eps=1e-8)
+        print("Optimizer: AdamW8bit (bitsandbytes)")
+    except ImportError:
+        from torch.optim import AdamW
+        optimizer = AdamW(groups, lr=lr_max, betas=(0.9, 0.95), eps=1e-8)
+        print("Optimizer: AdamW (bitsandbytes not available)")
+    return optimizer
 
 
 def build_scheduler(optimizer: AdamW, warmup_steps: int, total_steps: int,

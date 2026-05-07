@@ -24,6 +24,9 @@ class Trainer:
         self.run_id = run_id
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+
         self.optimizer = build_optimizer(model, config.lr_max, config.weight_decay)
         self.scheduler = build_scheduler(
             self.optimizer, config.warmup_steps, config.total_steps,
@@ -66,12 +69,20 @@ class Trainer:
         run_start = time.perf_counter()
         n_loops = self.cfg.max_loop_iters
 
-        for x, y in data_iter:
+        data_loader = data_iter
+        data_iterator = iter(data_loader)
+
+        while True:
             if self._opt_step >= self.cfg.total_steps or self._interrupted:
                 break
+            try:
+                x, y = next(data_iterator)
+            except StopIteration:
+                data_iterator = iter(data_loader)
+                x, y = next(data_iterator)
 
-            x = x.to(self.device)
-            y = y.to(self.device)
+            x = x.to(self.device, non_blocking=True)
+            y = y.to(self.device, non_blocking=True)
             phase = get_phase(self._opt_step)
             n_loops = get_loop_count(self._opt_step)
 

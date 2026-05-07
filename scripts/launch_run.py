@@ -93,7 +93,8 @@ def build_data_iter(cfg):
     from shared.data.loader import FixedOrderDataset
     from torch.utils.data import DataLoader
     ds = FixedOrderDataset(seq_len=cfg.max_seq_len)
-    return DataLoader(ds, batch_size=cfg.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+    return DataLoader(ds, batch_size=cfg.batch_size, shuffle=False, num_workers=0,
+                      pin_memory=True, drop_last=True)
 
 
 def main():

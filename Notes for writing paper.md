@@ -49,15 +49,19 @@ Read in full 2026-05-07. Already in component attribution (hyper-connections).
 
 *n-value ablation* (the key question for RTCC):
 
-| n | PPL |
-|---|-----|
-| 2 | 14.429 |
-| 4 | 14.404 |
-| 6 | 14.379 |
-| 8 | 14.388 |
-| 10 | 14.349 |
+| n | PPL | Change vs prev | Per unit n |
+|---|-----|----------------|------------|
+| 2 | 14.429 | — | — |
+| 4 | 14.404 | −0.025 | −0.0125 |
+| 6 | 14.379 | −0.025 | −0.0125 |
+| 8 | 14.388 | +0.009 | non-monotone |
+| 10 | 14.349 | −0.039 | −0.0195 |
 
-Diminishing returns above n=2. Total gain n=4→n=10 is only 0.055 PPL; non-monotone at n=8. Authors chose n=4 following the upstream mHC paper. **RTCC uses n=3, which sits between the two clearest data points and is well-justified** — the paper explicitly states diminishing returns above n=2, so n=3 is past the meaningful threshold without the parameter overhead of higher n. Cite: "diminishing returns above n=2 observed in Zeitoun et al.; we use n=3."
+Only even values were tested — **n=3 was never measured directly.** Total spread n=2 to n=10 is only 0.08 PPL; the non-monotone result at n=8 suggests these differences are largely noise at this model scale. Authors chose n=4 following the upstream mHC paper recommendation, not their own tuning.
+
+**Is n=3 better than n=2 in absolute terms?** Yes, almost certainly — "diminishing returns" means the marginal gain per additional n shrinks, not that performance regresses. Interpolating between n=2 and n=4, n=3 ≈ −0.012 PPL vs n=2. Still an improvement, just a smaller one.
+
+**RTCC uses n=3:** Defensible, but don't claim it was optimized — the data doesn't support that precision. The meaningful threshold is n≥2 vs n=1 (standard scalar residual), and even that gap isn't shown in their table. Safe framing: "following Zeitoun et al.'s finding that gains diminish rapidly above n=2, we use n=3."
 
 *Loop placement finding:* Hyper-connections once per loop (3 total for L=3) outperforms placement at every layer (12 total) — 14.40 vs 14.45 PPL — while being far cheaper. CART and RTCC apply once per loop iteration. This is correct.
 

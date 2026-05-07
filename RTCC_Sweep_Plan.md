@@ -29,7 +29,7 @@ These values are fixed across all runs. Do not vary them.
 | mla_latent | 144 | dim / 4 |
 | vocab_size | 32,000 | Llama-2 BPE — matches CART exactly |
 | Prelude layers (P) | 6 | CART-validated across all tested dims |
-| Max loops (R) | 8 | CART-validated ceiling |
+| Max loops (R) | **TBD** | Waiting for CART Stage 2 results — R ∈ {6, 8, 10} being tested at d=512 and d=768; inherit winner before starting any RTCC run |
 | Coda layers | 1 | CART-validated |
 | LTI formulation | sigmoid gating `h = sigmoid(a)·h + transformer_out` | From CART / OpenMythos |
 | Hyper-connections | n=3 | From CART / Hyperloop |
@@ -283,6 +283,7 @@ Resolve before Phase 1.
 | 2 | Token budget per sweep run? | **Locked: 500M** |
 | 3 | Sequence length curriculum for sweep? | Confirm max seq_len |
 | 4 | Data mixture for sweep runs? | Confirm proportional slice of CART mixture or modified |
+| 5 | **R (max loops)?** | **Blocked on CART Stage 2.** Check `K:/projects/Model_Paper_1/results.db` for d=512 and d=768 Stage 2 results across R ∈ {6, 8, 10}. Inherit the winning R before starting any RTCC run. |
 
 ---
 

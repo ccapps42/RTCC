@@ -101,8 +101,34 @@ where N_once = prelude+coda params, N_rec = recurrent block params. φ quantifie
 ### Useful for framing / contrast
 
 **Loop, Think, & Generalize: Implicit Reasoning in Recurrent-Depth Transformers**
-arXiv 2604.07822 — Kohli et al.
-Found "overthinking" degradation at excessive recurrence depth. RTCC's LTI sigmoid gating (spectral radius < 1) is specifically designed to prevent instability at high R — make this contrast explicit. Also: their "three-stage grokking" finding (memorization → in-distribution → systematic generalization) is useful framing for what recurrent depth buys.
+arXiv 2604.07822 — Kohli, Parthasarathy, Sun, Yao (Ohio State)
+
+Read in full 2026-05-07. Synthetic knowledge-graph multi-hop reasoning task.
+
+*Core finding:* Vanilla transformers achieve zero systematic generalization on multi-hop implicit reasoning even with matched compute. Recurrent-depth models (R ≥ 2) succeed. R ≥ 5 required for inference-time depth extrapolation beyond training depth.
+
+*Three-stage grokking:*
+1. Memorization — fits training compositions, no generalization
+2. In-distribution grokking (~10² epochs) — ID test accuracy rises sharply
+3. Systematic generalization (~10⁴ epochs) — OOD accuracy emerges, only after near-perfect ID
+
+Stage 3 lags Stage 2 by a large margin. Implication for RTCC training curves: a long plateau before OOD generalization is expected behavior, not a training failure.
+
+*Overthinking:* Too many inference iterations degrades performance. Logit margin (correct answer confidence) peaks then falls with additional recurrence. Effect worsens with task complexity. **RTCC mitigation:** LTI sigmoid gating with spectral radius < 1 structurally damps the hidden state between iterations, reducing unbounded growth. Cite explicitly: "We mitigate the overthinking instability observed in Kohli et al. (2026) through LTI gating with guaranteed spectral radius < 1."
+
+*Adaptive halting:* Stop when KL(p_t ∥ p_{t-1}) < 0.01 AND H(p_t) < 3.00. Outperforms KL-only stopping. Relevant if RTCC ever needs variable-R inference.
+
+*Dynamic recurrence more robust than fixed:* Poisson-sampled R during training (vs fixed R) reduces overthinking and improves depth extrapolation. CART/RTCC use fixed R — worth trying Poisson sampling in a future ablation.
+
+*Zero-initialization finding:* They zero-initialize output projection matrices (c_proj) for stability. Gaussian init caused instability in their architecture — with no damping mechanism, non-zero o_proj init causes each loop to add a non-zero perturbation that can compound over R iterations.
+
+**CART/RTCC status (checked 2026-05-07):** Both use `nn.init.normal_(std=0.02)` on ALL linears including `o_proj` — no zero-init. However, this is NOT a latent risk for two reasons:
+
+1. **HyperConnection init provides approximate identity.** Weights init to `[1, 0, 0]` → softmax ≈ `[0.576, 0.212, 0.212]`. All buffer entries start as `h.clone()`, so combined output = h at initialization — effectively identity, no perturbation on first loop.
+
+2. **LTI provides explicit spectral radius < 1 damping.** `A = sigmoid(a_param)` ≈ 0.9 at init — each loop damps the hidden state. Kohli et al. had no equivalent mechanism; zero-init o_proj was their only stabilizer.
+
+CART is already training stably at d=1024 R=6 (confirmed in practice). The two stability mechanisms together provide equivalent protection to zero-init o_proj via a different architectural path. Worth a footnote in the paper: "We rely on LTI gating and hyper-connection initialization for stability rather than zero-initializing output projections."
 
 **LoopFormer: Elastic-Depth Looped Transformers for Latent Reasoning via Shortcut Modulation**
 arXiv 2602.11451 — Jeddi, Ciccone, Taati

@@ -13,6 +13,49 @@ import torch.nn.functional as F
 from .rope import RotaryEmbedding
 
 
+class MLACrossAttention(nn.Module):
+    """MLA cross-attention for the recurrent core.
+
+    Q from h (current hidden state). K and V are pre-computed from prelude output e
+    and passed in — computed once before the loop, reused every iteration.
+    No RoPE (h has no direct token-position correspondence). Attention is causal
+    to prevent h[t] from attending to e[t+1], which encodes future token t+1.
+    """
+    def __init__(self, model_dim: int, n_heads: int, head_dim: int):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = head_dim
+        self.q_proj = nn.Linear(model_dim, n_heads * head_dim, bias=False)
+        self.o_proj = nn.Linear(n_heads * head_dim, model_dim, bias=False)
+
+    def forward(self, h: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+        B, T, _ = h.shape
+        H, D = self.n_heads, self.head_dim
+        Q = self.q_proj(h).view(B, T, H, D).transpose(1, 2)
+        out = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+        out = out.transpose(1, 2).contiguous().view(B, T, H * D)
+        return self.o_proj(out)
+
+
+class MLAKVProjection(nn.Module):
+    """Computes K and V from prelude output e — called once before the loop."""
+    def __init__(self, model_dim: int, n_heads: int, head_dim: int, mla_latent_dim: int):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = head_dim
+        self.kv_down = nn.Linear(model_dim, mla_latent_dim, bias=False)
+        self.k_up    = nn.Linear(mla_latent_dim, n_heads * head_dim, bias=False)
+        self.v_up    = nn.Linear(mla_latent_dim, n_heads * head_dim, bias=False)
+
+    def forward(self, e: torch.Tensor):
+        B, T, _ = e.shape
+        H, D = self.n_heads, self.head_dim
+        latent = self.kv_down(e)
+        K = self.k_up(latent).view(B, T, H, D).transpose(1, 2)
+        V = self.v_up(latent).view(B, T, H, D).transpose(1, 2)
+        return K, V
+
+
 class MLASelfAttention(nn.Module):
     def __init__(self, model_dim: int, n_heads: int, head_dim: int,
                  mla_latent_dim: int, rope_base: float = 10_000.0):

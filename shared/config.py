@@ -8,7 +8,7 @@ import yaml
 @dataclass
 class BaseConfig:
     # Model dimensions
-    vocab_size: int = 50257  # GPT-2 tokenizer vocab size
+    vocab_size: int = 32000  # Llama-2 BPE tokenizer — matches CART
     model_dim: int = 768
     max_seq_len: int = 512
     head_dim: int = 64

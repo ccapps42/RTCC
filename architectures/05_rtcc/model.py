@@ -31,7 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from shared.components.norm import RMSNorm
-from shared.components.attention import MLASelfAttention
+from shared.components.attention import MLASelfAttention, MLACrossAttention, MLAKVProjection
 from shared.components.lti import LTIInjection
 from shared.components.hyper import HyperConnection
 from shared.components.lie import LoopIndexEmbedding
@@ -84,18 +84,18 @@ class DenseBlock(nn.Module):
 
 
 class RTCCBlock(nn.Module):
-    """Recurrent block: MLA attention + ToroidalMoE FFN."""
+    """Recurrent block: MLA cross-attn (K/V from prelude e) + ToroidalMoE FFN."""
 
-    def __init__(self, model_dim, n_heads, head_dim, mla_latent_dim,
+    def __init__(self, model_dim, n_heads, head_dim,
                  grid_rows, grid_cols, patch_size, stride, expert_hidden):
         super().__init__()
         self.norm1 = RMSNorm(model_dim)
-        self.attn  = MLASelfAttention(model_dim, n_heads, head_dim, mla_latent_dim)
+        self.attn  = MLACrossAttention(model_dim, n_heads, head_dim)
         self.norm2 = RMSNorm(model_dim)
         self.ffn   = ToroidalMoE(grid_rows, grid_cols, patch_size, stride, expert_hidden)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.norm1(x))
+    def forward(self, x: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.norm1(x), K, V)
         x = x + self.ffn(self.norm2(x))
         return x
 
@@ -119,9 +119,10 @@ class RTCCModel(nn.Module):
         ])
 
         self.recurrent = RTCCBlock(
-            d, cfg.n_heads_recurrent, cfg.head_dim, cfg.mla_latent_dim,
+            d, cfg.n_heads_recurrent, cfg.head_dim,
             cfg.grid_rows, cfg.grid_cols, cfg.patch_size, cfg.stride, cfg.expert_hidden,
         )
+        self.kv_proj   = MLAKVProjection(d, cfg.n_heads_recurrent, cfg.head_dim, cfg.mla_latent_dim)
 
         self.coda = nn.ModuleList([
             DenseBlock(d, cfg.n_heads_coda, cfg.head_dim,
@@ -162,14 +163,16 @@ class RTCCModel(nn.Module):
             h = block(h)
         e = h
 
+        K, V = self.kv_proj(e)
+
         h = e.clone()
         buffer = self.hyper.init_buffer(h)
 
         for r in range(n_loops):
             h_input = self.hyper.combine(buffer)
             h_input = self.lie(h_input, r)
-            block_out = self.recurrent(h_input)
-            h = self.lti(h_input, e, block_out)
+            block_out = self.recurrent(h_input, K, V)
+            h = self.lti(h_input, block_out)
             buffer = self.hyper.update_buffer(buffer, h)
 
         for block in self.coda:

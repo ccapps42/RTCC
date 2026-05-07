@@ -29,7 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from shared.components.norm import RMSNorm
-from shared.components.attention import MLASelfAttention
+from shared.components.attention import MLASelfAttention, MLACrossAttention, MLAKVProjection
 from shared.components.lti import LTIInjection
 from shared.components.hyper import HyperConnection
 from shared.components.lie import LoopIndexEmbedding
@@ -160,16 +160,17 @@ class DenseBlock(nn.Module):
 
 
 class MoEBlock(nn.Module):
-    def __init__(self, model_dim, n_heads, head_dim, mla_latent_dim,
+    """Recurrent block: MLA cross-attn (K/V from prelude e) + routed MoE FFN."""
+    def __init__(self, model_dim, n_heads, head_dim,
                  expert_dim, n_experts, n_shared, top_k):
         super().__init__()
         self.norm1 = RMSNorm(model_dim)
-        self.attn  = MLASelfAttention(model_dim, n_heads, head_dim, mla_latent_dim)
+        self.attn  = MLACrossAttention(model_dim, n_heads, head_dim)
         self.norm2 = RMSNorm(model_dim)
         self.ffn   = MoEFFN(model_dim, expert_dim, n_experts, n_shared, top_k)
 
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
+    def forward(self, x, K, V):
+        x = x + self.attn(self.norm1(x), K, V)
         moe_out, aux = self.ffn(self.norm2(x))
         x = x + moe_out
         return x, aux
@@ -195,9 +196,10 @@ class StandardMoEModel(nn.Module):
         ])
 
         self.recurrent = MoEBlock(
-            d, cfg.n_heads_recurrent, cfg.head_dim, cfg.mla_latent_dim,
+            d, cfg.n_heads_recurrent, cfg.head_dim,
             cfg.expert_dim, cfg.n_experts, cfg.n_shared, cfg.top_k,
         )
+        self.kv_proj   = MLAKVProjection(d, cfg.n_heads_recurrent, cfg.head_dim, cfg.mla_latent_dim)
 
         self.coda = nn.ModuleList([
             DenseBlock(d, cfg.n_heads_coda, cfg.head_dim, cfg.mla_latent_dim, ffn_hidden)
@@ -230,6 +232,7 @@ class StandardMoEModel(nn.Module):
         for block in self.prelude:
             h = block(h)
         e = h
+        K, V = self.kv_proj(e)
 
         h = e.clone()
         buffer = self.hyper.init_buffer(h)
@@ -238,9 +241,9 @@ class StandardMoEModel(nn.Module):
         for r in range(n_loops):
             h_input = self.hyper.combine(buffer)
             h_input = self.lie(h_input, r)
-            block_out, aux = self.recurrent(h_input)
+            block_out, aux = self.recurrent(h_input, K, V)
             total_aux = total_aux + aux
-            h = self.lti(h_input, e, block_out)
+            h = self.lti(h_input, block_out)
             buffer = self.hyper.update_buffer(buffer, h)
 
         for block in self.coda:

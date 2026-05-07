@@ -1,9 +1,9 @@
 """Dense FFN baseline — standard transformer with SwiGLU FFN and MLA attention.
 
 Recurrent loop order matches CART exactly:
-    hyper.combine(buffer) → LIE → block(h_input) → LTI(h_input, e, block_out) → update_buffer
+    hyper.combine(buffer) → LIE → block(h_input, K, V) → LTI(h_input, block_out) → update_buffer
 
-e = prelude output, stored before loop, injected via LTI B·e term every iteration.
+K, V pre-computed from prelude output e once before the loop (MLAKVProjection).
 """
 import sys
 import importlib.util
@@ -28,7 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from shared.components.norm import RMSNorm
-from shared.components.attention import MLASelfAttention
+from shared.components.attention import MLASelfAttention, MLACrossAttention, MLAKVProjection
 from shared.components.lti import LTIInjection
 from shared.components.hyper import HyperConnection
 from shared.components.lie import LoopIndexEmbedding
@@ -46,7 +46,8 @@ class SwiGLU(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Pre-norm: RMSNorm → MLA → residual → RMSNorm → SwiGLU → residual."""
+    """Pre-norm: RMSNorm → MLA self-attn → residual → RMSNorm → SwiGLU → residual.
+    Used in prelude and coda."""
 
     def __init__(self, model_dim: int, n_heads: int, head_dim: int,
                  mla_latent_dim: int, ffn_hidden: int):
@@ -58,6 +59,22 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.norm1(x))
+        x = x + self.ffn(self.norm2(x))
+        return x
+
+
+class RecurrentBlock(nn.Module):
+    """Recurrent block: MLA cross-attn (K/V from prelude e) + SwiGLU FFN."""
+
+    def __init__(self, model_dim: int, n_heads: int, head_dim: int, ffn_hidden: int):
+        super().__init__()
+        self.norm1 = RMSNorm(model_dim)
+        self.attn  = MLACrossAttention(model_dim, n_heads, head_dim)
+        self.norm2 = RMSNorm(model_dim)
+        self.ffn   = SwiGLU(model_dim, ffn_hidden)
+
+    def forward(self, x: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.norm1(x), K, V)
         x = x + self.ffn(self.norm2(x))
         return x
 
@@ -76,8 +93,8 @@ class DenseFfnModel(nn.Module):
             for _ in range(cfg.prelude_layers)
         ])
 
-        self.recurrent = TransformerBlock(d, cfg.n_heads_recurrent, cfg.head_dim,
-                                          cfg.mla_latent_dim, cfg.ffn_hidden)
+        self.recurrent = RecurrentBlock(d, cfg.n_heads_recurrent, cfg.head_dim, cfg.ffn_hidden)
+        self.kv_proj   = MLAKVProjection(d, cfg.n_heads_recurrent, cfg.head_dim, cfg.mla_latent_dim)
 
         self.coda = nn.ModuleList([
             TransformerBlock(d, cfg.n_heads_coda, cfg.head_dim,
@@ -110,7 +127,8 @@ class DenseFfnModel(nn.Module):
 
         for block in self.prelude:
             h = block(h)
-        e = h  # prelude output — fixed context injected via LTI on every iteration
+        e = h
+        K, V = self.kv_proj(e)
 
         h = e.clone()
         buffer = self.hyper.init_buffer(h)
@@ -118,8 +136,8 @@ class DenseFfnModel(nn.Module):
         for r in range(n_loops):
             h_input = self.hyper.combine(buffer)
             h_input = self.lie(h_input, r)
-            block_out = self.recurrent(h_input)
-            h = self.lti(h_input, e, block_out)
+            block_out = self.recurrent(h_input, K, V)
+            h = self.lti(h_input, block_out)
             buffer = self.hyper.update_buffer(buffer, h)
 
         for block in self.coda:

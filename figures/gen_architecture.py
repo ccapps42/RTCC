@@ -120,7 +120,7 @@ box(ax, CX, y, BW, BHT, 'Toroidal Expert Block', C_EXPERT,
 y -= BHT/2 + GAP; arr(ax, CX, y+GAP-0.02, y+0.02); y -= BH/2
 
 box(ax, CX, y, BW, BH, 'Linear Time-Invariant Update (LTI)', C_LTI,
-    sublabel='h = sigmoid(A)·h_input + B·e + transformer_out')
+    sublabel='h = sigmoid(A)·h_input + transformer_out')
 # Dashed line from anchor e down to LTI
 lti_y = y
 ax.plot([anx, anx], [any_-0.38, lti_y+0.15], color='#885500', lw=1.2,

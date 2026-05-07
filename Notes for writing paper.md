@@ -23,8 +23,20 @@ Search conducted 2026-05-07. Field is active — several papers dropped April 20
 ### Must cite / directly competitive
 
 **Parcae: Scaling Laws For Stable Looped Language Models**
-arXiv 2604.12946 — Prairie, Novack, Berg-Kirkpatrick, Fu
-Most directly competitive. Establishes the first scaling laws for looped transformers. Key finding: 770M Parcae matches quality of 1.3B standard transformer on same data. Optimal recurrence scales as C^0.40, tokens as C^0.78. RTCC's differentiation: spatial ToroidalMoE structure is orthogonal to Parcae's scaling law focus — Parcae is about when to loop, RTCC is about what the loop body does.
+arXiv 2604.12946 — Prairie, Novack, Berg-Kirkpatrick, Fu (UC San Diego / Together AI)
+
+Most directly competitive. Read in full 2026-05-07.
+
+*Stability mechanism:* Frames the looped residual stream as a dynamical system: `h_{t+1} = A_bar * h_t + B_bar * e + R_bar(h_t, e)`. Stability requires spectral radius ρ(A_bar) < 1. Their fix: restrict A to negative diagonal, discretize via ZOH: `A_bar = exp(Delta * A)`, which is elementwise < 1 by construction. **This is the same stability requirement as RTCC's LTI** — RTCC uses `sigmoid(a_param)` as a different parameterization of the same guarantee. Cite Parcae and note both approaches solve the same dynamical systems problem. Their key empirical finding: all divergent runs had ρ ≥ 1; all convergent runs had ρ < 1. Standard addition-based injection gives exactly ρ = 1 (marginally stable), which is why explicit gating is needed.
+
+*Quality:* 770M Parcae matches 1.3B standard transformer. 1.3B Parcae at T=8 loops scores 28.44 on Core benchmark vs 25.45 for same-size transformer.
+
+*Scaling laws:*
+- Training: L̂(μ_rec, D) = E + X·N(μ_rec)^(−x) + Y·D^(−y); exponents γ_μ ≈ 0.40, γ_D ≈ 0.78
+- Looping is a third scaling axis alongside model size and data
+- Inference: L(T) = L_∞ + Z·exp(−z·T); saturating exponential, ceiling set by training depth
+
+*Differentiation from RTCC:* Parcae asks "when and how much to loop" (scaling law focus). RTCC asks "what the loop body does spatially" (ToroidalMoE structure). Orthogonal contributions — Parcae's stability result actually *supports* RTCC's LTI design choice.
 
 **Hyperloop Transformers**
 arXiv 2604.21254 — Zeitoun, Torroba-Hennigen, Kim
@@ -33,6 +45,33 @@ Already in component attribution (hyper-connections). Shows ~50% parameter reduc
 **The Recurrent Transformer: Greater Effective Depth and Efficient Decoding**
 arXiv 2604.21215 — Oncescu et al.
 Listed in sweep plan attribution as "OpenMythos/Claude Mythos" for LTI injection. Verify this arXiv ID matches the intended citation before submission. Core claim: reduced KV cache memory and inference latency via layer-wise recurrence. Tiling algorithm reduces HBM traffic from Θ(N²) to Θ(N log N).
+
+**How Much Is One Recurrence Worth? Iso-Depth Scaling Laws for Looped Language Models**
+arXiv 2604.21106 — Schwethelm, Rückert, Kaissis (TU Munich / Imperial College)
+
+Read in full 2026-05-07. 116 pretraining runs, r ∈ {1, 2, 4, 8}, ~50× compute range.
+
+*Core metric — recurrence-equivalence exponent φ:* Derives a joint scaling law:
+`L = E + A(N_once + r^φ · N_rec)^(−α) + B · D^(−β)`
+where N_once = prelude+coda params, N_rec = recurrent block params. φ quantifies how much capacity each additional loop recovers relative to an unshared block. φ = 1 means a loop is as good as a new layer; φ = 0 means loops add nothing.
+
+*Key results:*
+- φ = 0.459 (95% CI: [0.41, 0.53]) for baseline looped transformer — each loop recovers ~half a real layer's capacity
+- φ = 0.65 with hyperconnections — **RTCC uses hyperconnections (n=3), so this prediction applies directly**
+- φ = 0.38 with TBPTT (truncated backprop through time) — worse than baseline; avoid
+- R² = 0.9972 for joint law vs R² = 0.9552 if φ forced to 1
+
+*Practical finding:* At r=4, a 410M looped model performs like a 580M non-looped model but costs training compute of a 1B non-looped model. Looped models trail non-looped by 0.03–0.12 nats depending on r.
+
+*Iso-depth vs iso-parameter:* Their design fixes total effective layers = 20 (iso-depth), varying how many are looped. Parcae uses iso-parameter. RTCC is closest to iso-depth (P=6 prelude + R loops + coda=1, fixed structure). Clarify framing in paper.
+
+*Implications for RTCC:*
+- φ = 0.65 with hyperconnections is a concrete prediction your sweep will test. If RTCC's recurrent ToroidalMoE body matches or exceeds this, that is a publishable result.
+- TBPTT reduces φ — RTCC backprops through all R loops, which is the right choice. Cite this as justification.
+- The φ metric could be computed from RTCC sweep results and reported as a contribution.
+- Looped models benefit *more* from data scaling than non-looped (their data exponent β/(α+β) = 0.61–0.67 vs 0.52 for non-looped). This supports training longer (500M tokens) rather than wider.
+
+*Differentiation from RTCC:* They study the loop body as a standard transformer block. RTCC's contribution is the spatial structure of the loop body (ToroidalMoE). Their φ metric is a tool RTCC can adopt and extend.
 
 ### Useful for framing / contrast
 

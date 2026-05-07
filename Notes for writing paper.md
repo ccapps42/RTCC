@@ -39,8 +39,29 @@ Most directly competitive. Read in full 2026-05-07.
 *Differentiation from RTCC:* Parcae asks "when and how much to loop" (scaling law focus). RTCC asks "what the loop body does spatially" (ToroidalMoE structure). Orthogonal contributions — Parcae's stability result actually *supports* RTCC's LTI design choice.
 
 **Hyperloop Transformers**
-arXiv 2604.21254 — Zeitoun, Torroba-Hennigen, Kim
-Already in component attribution (hyper-connections). Shows ~50% parameter reduction vs depth-matched standard transformers. Their efficiency result is consistent with RTCC's efficiency story and can be cited as supporting context.
+arXiv 2604.21254 — Zeitoun, Torroba-Hennigen, Kim (MIT)
+
+Read in full 2026-05-07. Already in component attribution (hyper-connections).
+
+*Main result:* Hyperloop (135.7M params) outperforms depth-matched Transformer (238M params) in perplexity and downstream accuracy — ~50% parameter reduction with better quality. Holds after INT4 quantization.
+
+*Hyperconnection mechanics:* Expands scalar residual stream to matrix-valued `T × n × C`. Three learned input-dependent projection matrices (H^pre, H^post, H^res) gate the per-loop update. Applied at the loop boundary only — once per loop iteration, not once per layer.
+
+*n-value ablation* (the key question for RTCC):
+
+| n | PPL |
+|---|-----|
+| 2 | 14.429 |
+| 4 | 14.404 |
+| 6 | 14.379 |
+| 8 | 14.388 |
+| 10 | 14.349 |
+
+Diminishing returns above n=2. Total gain n=4→n=10 is only 0.055 PPL; non-monotone at n=8. Authors chose n=4 following the upstream mHC paper. **RTCC uses n=3, which sits between the two clearest data points and is well-justified** — the paper explicitly states diminishing returns above n=2, so n=3 is past the meaningful threshold without the parameter overhead of higher n. Cite: "diminishing returns above n=2 observed in Zeitoun et al.; we use n=3."
+
+*Loop placement finding:* Hyper-connections once per loop (3 total for L=3) outperforms placement at every layer (12 total) — 14.40 vs 14.45 PPL — while being far cheaper. CART and RTCC apply once per loop iteration. This is correct.
+
+*2604.21106 cross-reference:* Schwethelm et al. tested K=2 lanes (their terminology) and found φ=0.65. Hyperloop's ablation shows n=2 already captures most gain. So the φ=0.65 result likely holds at n=3 as well — possibly slightly higher.
 
 **The Recurrent Transformer: Greater Effective Depth and Efficient Decoding**
 arXiv 2604.21215 — Oncescu et al.

@@ -6,9 +6,9 @@ Last updated: 2026-05-07
 
 ## Purpose
 
-This document defines the complete sweep experiment plan for Paper 2. The sweep model (d=576) characterizes how privacy percentage and overlap depth affect model quality. The benchmark model (d=TBD) will be covered in a separate document.
+This document defines the complete experiment plan for Paper 2. The d=576 sweep characterizes how privacy percentage and overlap depth affect model quality. A single d=1024 scaling run is included to demonstrate the architecture holds at a larger model size.
 
-All runs in this document are at d=576. No benchmark comparisons against published models are made here — that is the benchmark doc's job. The primary claims this sweep supports:
+All sweep runs are at d=576. The d=1024 run is one additional config matching the best-performing sweep geometry. No benchmark comparisons against published models are made here. The primary claims this sweep supports:
 
 1. Privacy percentage has a measurable effect on quality (the privacy curve).
 2. Overlap depth (1-cell vs 2-cell) has an independent effect at matched privacy.
@@ -279,6 +279,25 @@ Dependencies and rationale.
 
 **Total training runs: 11** (7 sweep + 4 baselines)  
 **Additional inference-only: 4** (2 communication ablations + 2 specialization analyses, zero training compute)
+
+---
+
+## Scaling run — d=1024
+
+One additional run after the d=576 sweep completes. Purpose: confirm the architecture scales; provides a second data point for the paper without committing to a full sweep.
+
+| Parameter | Value | Notes |
+|---|---|---|
+| model_dim | 1024 | 32×32 grid; 128-aligned (1024/128=8) ✓ |
+| Grid | 32×32 | 4 experts/axis at stride=8 |
+| Patch / stride | Matches d=576 winner | Run after sweep to pick the winning geometry |
+| Fallback config | patch=9, stride=8, 1-cell | Mirrors S7; 4×4=16 experts, 60% privacy |
+| Token budget | 500M | Same as d=576 runs |
+| Est. throughput | ~4,000–5,000 tok/s | ~25–30h per run on RTX 3090 |
+
+**Timing:** Run this only after the d=576 sweep is complete and a winner is identified. The winning geometry at d=576 (patch/stride/overlap) is the config to replicate at d=1024 — not S7 by default.
+
+**VRAM note:** d=1024 will use significantly more than the 4.95 GB/run at d=576. Profile before assuming concurrent runs are safe.
 
 ---
 

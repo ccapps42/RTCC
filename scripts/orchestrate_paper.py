@@ -41,6 +41,8 @@ QUEUE = [
     ("rtcc",             "configs/paper_576/S4_rtcc_36pct_1cell.yaml",   "S4_rtcc_36pct_1cell"),
     ("rtcc",             "configs/paper_576/S5_rtcc_36pct_2cell.yaml",   "S5_rtcc_36pct_2cell"),
     ("rtcc",             "configs/paper_576/S6_rtcc_51pct.yaml",         "S6_rtcc_51pct"),
+    # Phase 4 — scaling run (run after d=576 sweep; update geometry to match winner)
+    ("rtcc",             "configs/paper_1024/S7_rtcc_60pct.yaml",        "1024_S7_rtcc_60pct"),
 ]
 
 

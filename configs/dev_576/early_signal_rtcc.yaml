@@ -15,7 +15,7 @@ warmup_steps: 500
 batch_size: 4
 grad_accum_steps: 8
 checkpoint_every: 1000
-eval_every: 200
+eval_every: 500
 hardware: rtx3090
 run_name: dev_576/early_signal_rtcc
 grid_rows: 24

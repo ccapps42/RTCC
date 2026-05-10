@@ -1,0 +1,25 @@
+# Early signal run — is RTCC interesting? 2000 steps, S7 geometry, R=8
+# 2000 steps x 8 accum x 4 batch x 1024 seq = 65,536,000 tokens (~13% of full budget)
+# Read loss curve at eval points — declining post-warmup and ppl <50 by step 2000 is a good sign
+model_dim: 576
+n_heads_prelude: 9
+n_heads_recurrent: 9
+n_heads_coda: 9
+mla_latent_dim: 144
+max_seq_len: 1024
+prelude_layers: 6
+coda_layers: 1
+max_loop_iters: 8
+total_steps: 2000
+warmup_steps: 500
+batch_size: 4
+grad_accum_steps: 8
+checkpoint_every: 1000
+eval_every: 200
+hardware: rtx3090
+run_name: dev_576/early_signal_rtcc
+grid_rows: 24
+grid_cols: 24
+patch_size: 9
+stride: 8
+expert_hidden: 512

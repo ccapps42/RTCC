@@ -38,6 +38,7 @@ class Trainer:
         self._opt_step = 0       # optimizer steps (primary counter)
         self._tokens_seen = 0
         self._interrupted = False
+        self._diag_batch = None  # one stored batch for diagnostic forward passes
         signal.signal(signal.SIGINT, self._handle_interrupt)
         signal.signal(signal.SIGTERM, self._handle_interrupt)
 
@@ -83,6 +84,8 @@ class Trainer:
 
             x = x.to(self.device, non_blocking=True)
             y = y.to(self.device, non_blocking=True)
+            if self._diag_batch is None:
+                self._diag_batch = (x[:1].clone(), y[:1].clone())
             phase = get_phase(self._opt_step)
             n_loops = get_loop_count(self._opt_step)
 
@@ -132,10 +135,14 @@ class Trainer:
                     h, rem = divmod(int(secs_left), 3600)
                     eta = f"{h}h {rem//60:02d}m"
                     pct = 100 * self._opt_step / self.cfg.total_steps
+                    rho_str = ""
+                    if hasattr(self.model, 'lti'):
+                        with torch.no_grad():
+                            rho_str = f"| rho {torch.sigmoid(self.model.lti.a_param).max().item():.4f} "
                     print(f"step {self._opt_step:6d}/{self.cfg.total_steps} ({pct:5.1f}%) "
                           f"| loss {accum_loss/accum_count:.4f} "
                           f"| lr {lr:.2e} | norm {grad_norm:.2f} "
-                          f"| {tokens_this_step/sec:.0f} tok/s | eta {eta}")
+                          f"{rho_str}| {tokens_this_step/sec:.0f} tok/s | eta {eta}")
 
                 accum_loss = 0.0
                 accum_aux = 0.0
@@ -184,17 +191,57 @@ class Trainer:
         if not Path(self.cfg.val_parquet).exists():
             print(f"  [eval] skipped — val.parquet not yet created")
             return
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
         val_loss, val_ppl = evaluate_perplexity(
             self.model, self.cfg.val_parquet, self.device,
             seq_len=self.cfg.max_seq_len,
         )
+
+        # Rho (LTI spectral radius)
+        rho_max, rho_mean = 0.0, 0.0
+        if hasattr(self.model, 'lti'):
+            with torch.no_grad():
+                a = torch.sigmoid(self.model.lti.a_param)
+                rho_max = a.max().item()
+                rho_mean = a.mean().item()
+
+        # Loop delta — one diagnostic forward pass on a stored batch
+        loop_deltas = []
+        if self._diag_batch is not None:
+            dx, _ = self._diag_batch
+            dx = dx.to(self.device)
+            self.model.eval()
+            try:
+                with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    _, diag = self.model(dx, n_loops=self.cfg.max_loop_iters,
+                                        return_diagnostics=True)
+                loop_deltas = diag["loop_deltas"]
+            except TypeError:
+                pass  # model doesn't support return_diagnostics
+            self.model.train()
+
+        peak_vram_gb = (torch.cuda.max_memory_allocated() / 1e9
+                        if torch.cuda.is_available() else 0.0)
+
+        # DB
         self.logger.log_checkpoint(step, str(Path(self.cfg.checkpoint_dir) / f"step_{step:08d}"),
                                    val_loss, val_ppl, None)
-        self.logger.log_eval(
-            checkpoint_step=step,
-            eval_type="perplexity",
-            metric="perplexity",
-            value=val_ppl,
-            hardware=self.cfg.hardware,
-        )
-        print(f"  [eval] step {step} | val_loss {val_loss:.4f} | ppl {val_ppl:.2f}")
+        self.logger.log_eval(step, "perplexity", "perplexity", val_ppl, self.cfg.hardware)
+        if hasattr(self.model, 'lti'):
+            self.logger.log_eval(step, "rho", "rho_max", rho_max, self.cfg.hardware)
+            self.logger.log_eval(step, "rho", "rho_mean", rho_mean, self.cfg.hardware)
+        self.logger.log_eval(step, "vram", "peak_vram_gb", peak_vram_gb, self.cfg.hardware)
+        for r, delta in enumerate(loop_deltas):
+            self.logger.log_eval(step, "loop_delta", f"loop_{r}", delta,
+                                 self.cfg.hardware, inference_loops=r)
+
+        # Console
+        rho_str = f" | rho_max {rho_max:.4f} | rho_mean {rho_mean:.4f}" if hasattr(self.model, 'lti') else ""
+        print(f"  [eval] step {step} | val_loss {val_loss:.4f} | ppl {val_ppl:.2f}"
+              f"{rho_str} | vram {peak_vram_gb:.2f}GB")
+        if loop_deltas:
+            delta_str = "  ".join(f"r{r}:{d:.3f}" for r, d in enumerate(loop_deltas))
+            print(f"  [loop_delta] {delta_str}")

@@ -154,7 +154,8 @@ class RTCCModel(nn.Module):
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, std=0.02)
 
-    def forward(self, x: torch.Tensor, n_loops: int | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, n_loops: int | None = None,
+                return_diagnostics: bool = False):
         if n_loops is None:
             n_loops = self.cfg.max_loop_iters
 
@@ -167,16 +168,24 @@ class RTCCModel(nn.Module):
 
         h = e.clone()
         buffer = self.hyper.init_buffer(h)
+        loop_deltas = []
 
         for r in range(n_loops):
+            h_prev = h
             h_input = self.hyper.combine(buffer)
             h_input = self.lie(h_input, r)
             block_out = self.recurrent(h_input, K, V)
             h = self.lti(h_input, block_out)
             buffer = self.hyper.update_buffer(buffer, h)
+            if return_diagnostics:
+                loop_deltas.append((h - h_prev).norm(dim=-1).mean().item())
 
         for block in self.coda:
             h = block(h)
 
         h = self.norm(h)
-        return self.lm_head(h)
+        logits = self.lm_head(h)
+
+        if return_diagnostics:
+            return logits, {"loop_deltas": loop_deltas}
+        return logits

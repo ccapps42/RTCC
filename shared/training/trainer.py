@@ -14,7 +14,7 @@ from shared.training.db_logger import DBLogger
 from shared.training.checkpoint import save_checkpoint, load_checkpoint, get_checkpoint_size_mb
 from shared.training.optimizer import build_optimizer, build_scheduler
 from shared.data.curriculum import get_phase, get_loop_count
-from shared.eval.perplexity import evaluate_perplexity
+from shared.eval.perplexity import evaluate_perplexity, evaluate_perplexity_bin
 
 
 class Trainer:
@@ -195,6 +195,15 @@ class Trainer:
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
 
+        # Primary eval — CART-matching bin files at seq_len=1024
+        _, ppl_tiny = evaluate_perplexity_bin(
+            self.model, self.cfg.val_tiny_bin, self.device, seq_len=self.cfg.max_seq_len)
+        _, ppl_wiki = evaluate_perplexity_bin(
+            self.model, self.cfg.val_wiki_bin, self.device, seq_len=self.cfg.max_seq_len)
+        _, ppl_edu  = evaluate_perplexity_bin(
+            self.model, self.cfg.val_edu_bin,  self.device, seq_len=self.cfg.max_seq_len)
+
+        # Secondary — RTCC held-out FineWeb parquet (kept for internal consistency)
         val_loss, val_ppl = evaluate_perplexity(
             self.model, self.cfg.val_parquet, self.device,
             seq_len=self.cfg.max_seq_len,
@@ -229,7 +238,10 @@ class Trainer:
         # DB
         self.logger.log_checkpoint(step, str(Path(self.cfg.checkpoint_dir) / f"step_{step:08d}"),
                                    val_loss, val_ppl, None)
-        self.logger.log_eval(step, "perplexity", "perplexity", val_ppl, self.cfg.hardware)
+        self.logger.log_eval(step, "perplexity", "ppl_tiny", ppl_tiny, self.cfg.hardware)
+        self.logger.log_eval(step, "perplexity", "ppl_wiki", ppl_wiki, self.cfg.hardware)
+        self.logger.log_eval(step, "perplexity", "ppl_edu",  ppl_edu,  self.cfg.hardware)
+        self.logger.log_eval(step, "perplexity", "ppl_fineweb", val_ppl, self.cfg.hardware)
         if hasattr(self.model, 'lti'):
             self.logger.log_eval(step, "rho", "rho_max", rho_max, self.cfg.hardware)
             self.logger.log_eval(step, "rho", "rho_mean", rho_mean, self.cfg.hardware)
@@ -238,10 +250,11 @@ class Trainer:
             self.logger.log_eval(step, "loop_delta", f"loop_{r}", delta,
                                  self.cfg.hardware, inference_loops=r)
 
-        # Console
-        rho_str = f" | rho_max {rho_max:.4f} | rho_mean {rho_mean:.4f}" if hasattr(self.model, 'lti') else ""
-        print(f"  [eval] step {step} | val_loss {val_loss:.4f} | ppl {val_ppl:.2f}"
-              f"{rho_str} | vram {peak_vram_gb:.2f}GB")
+        # Console — matches CART format
+        rho_str = f"  rho_max={rho_max:.4f}  rho_mean={rho_mean:.4f}" if hasattr(self.model, 'lti') else ""
+        print(f"  [eval] step {step} | "
+              f"ppl_tiny={ppl_tiny:.2f}  ppl_wiki={ppl_wiki:.2f}  ppl_edu={ppl_edu:.2f}  "
+              f"ppl_fineweb={val_ppl:.2f}{rho_str}  vram={peak_vram_gb:.2f}GB")
         if loop_deltas:
             delta_str = "  ".join(f"r{r}:{d:.3f}" for r, d in enumerate(loop_deltas))
             print(f"  [loop_delta] {delta_str}")

@@ -36,3 +36,36 @@ def evaluate_perplexity(model: torch.nn.Module, val_parquet: str,
     avg_loss = total_loss / total_tokens
     ppl = math.exp(avg_loss)
     return avg_loss, ppl
+
+
+def evaluate_perplexity_bin(model: torch.nn.Module, bin_path: str,
+                            device: torch.device, seq_len: int = 1024,
+                            batch_size: int = 8, max_batches: int = 50) -> tuple[float, float]:
+    """Evaluate perplexity on a CART-format uint16 .bin file. Matches CART's eval exactly."""
+    from shared.data.loader import FixedOrderDataset
+
+    if not Path(bin_path).exists():
+        return float("nan"), float("nan")
+
+    model.eval()
+    dataset = FixedOrderDataset(bin_path, seq_len=seq_len)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    total_loss = 0.0
+    total_tokens = 0
+
+    with torch.no_grad():
+        for i, (x, y) in enumerate(loader):
+            if i >= max_batches:
+                break
+            x = x.to(device)
+            y = y.to(device)
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                logits = model(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), reduction="sum")
+            total_loss += loss.item()
+            total_tokens += y.numel()
+
+    model.train()
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else float("nan")
+    return avg_loss, math.exp(avg_loss)

@@ -53,6 +53,10 @@ class BaseConfig:
     db_path: str = "K:/projects/RTCC_Paper_2/db/rtcc_experiments.db"
     hf_cache_dir: str = "K:/projects/Model_Paper_1/data/hf_cache"
     val_parquet: str = "K:/projects/RTCC_Paper_2/data/validation/val.parquet"
+    # CART validation bins — same tokenizer as training data, seq_len applied at read time
+    val_tiny_bin: str = "K:/projects/Model_Paper_1/data/val/tinystories_val.bin"
+    val_wiki_bin: str = "K:/projects/Model_Paper_1/data/val/wikipedia_val.bin"
+    val_edu_bin:  str = "K:/projects/Model_Paper_1/data/val/fineweb_edu_val.bin"
 
     def to_dict(self) -> dict:
         return asdict(self)

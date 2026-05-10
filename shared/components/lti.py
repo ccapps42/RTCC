@@ -17,8 +17,12 @@ class LTIInjection(nn.Module):
         self.a_param = nn.Parameter(torch.full((dim,), init_a))
 
     def forward(self, h_input: torch.Tensor,
-                transformer_out: torch.Tensor) -> torch.Tensor:
-        A = torch.sigmoid(self.a_param)
+                transformer_out: torch.Tensor,
+                A: torch.Tensor | None = None) -> torch.Tensor:
+        # Callers in tight loops should precompute A via torch.sigmoid(self.a_param)
+        # once per forward and pass it in to skip the per-iteration sigmoid.
+        if A is None:
+            A = torch.sigmoid(self.a_param)
         return A * h_input + transformer_out
 
     def spectral_radius(self) -> float:

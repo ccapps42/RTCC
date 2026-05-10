@@ -28,6 +28,14 @@ class LoopIndexEmbedding(nn.Module):
         pe[:, 1::2] = torch.cos(pos * div)
         return pe
 
+    def precompute_signals(self, n_loops: int) -> torch.Tensor:
+        """Project all loop signals in a single batched GEMM. Returns [n_loops, model_dim].
+
+        Callers in tight loops should call this once per forward and index
+        signals[r] inside the loop instead of calling self.forward(h, r).
+        """
+        return self.proj(self.pe[:n_loops])
+
     def forward(self, h: torch.Tensor, r: int) -> torch.Tensor:
         signal = self.proj(self.pe[r])  # [model_dim]
         return h + signal               # broadcast: [B, T, model_dim] + [model_dim]

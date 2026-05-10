@@ -166,16 +166,21 @@ class RTCCModel(nn.Module):
 
         K, V = self.kv_proj(e)
 
-        h = e.clone()
+        # h already refers to e; no clone needed — LTI builds fresh tensors,
+        # nothing mutates e in place, autograd handles shared references.
         buffer = self.hyper.init_buffer(h)
         loop_deltas = []
 
+        # Hoist invariants out of the loop: precompute LIE signals in one batched
+        # GEMM, compute LTI's sigmoid(a_param) once.
+        signals = self.lie.precompute_signals(n_loops)             # [n_loops, D]
+        A_lti = torch.sigmoid(self.lti.a_param)                    # [D]
+
         for r in range(n_loops):
             h_prev = h
-            h_input = self.hyper.combine(buffer)
-            h_input = self.lie(h_input, r)
+            h_input = self.hyper.combine(buffer) + signals[r]
             block_out = self.recurrent(h_input, K, V)
-            h = self.lti(h_input, block_out)
+            h = self.lti(h_input, block_out, A=A_lti)
             buffer = self.hyper.update_buffer(buffer, h)
             if return_diagnostics:
                 loop_deltas.append((h - h_prev).norm(dim=-1).mean().item())

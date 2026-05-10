@@ -142,7 +142,7 @@ class Trainer:
                     sec_per_step=sec,
                 )
 
-                if self._opt_step % 100 == 0:
+                if self._opt_step % 50 == 0:
                     steps_done = self._opt_step - self._resume_step
                     steps_left = self.cfg.total_steps - self._opt_step
                     elapsed = time.perf_counter() - run_start

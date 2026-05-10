@@ -40,8 +40,10 @@ def evaluate_perplexity(model: torch.nn.Module, val_parquet: str,
 
 def evaluate_perplexity_bin(model: torch.nn.Module, bin_path: str,
                             device: torch.device, seq_len: int = 1024,
-                            batch_size: int = 8) -> tuple[float, float]:
-    """Evaluate perplexity on a CART-format uint16 .bin file. Runs the full file."""
+                            batch_size: int = 8, max_batches: int = 50) -> tuple[float, float]:
+    """Evaluate perplexity on a CART-format uint16 .bin file.
+    Caps at max_batches per eval call to match CART's eval-time budget exactly.
+    50 batches x batch_size 8 = 400 sequences = ~410k tokens per source."""
     from shared.data.loader import FixedOrderDataset
 
     if not Path(bin_path).exists():
@@ -55,7 +57,9 @@ def evaluate_perplexity_bin(model: torch.nn.Module, bin_path: str,
     total_tokens = 0
 
     with torch.no_grad():
-        for x, y in loader:
+        for i, (x, y) in enumerate(loader):
+            if i >= max_batches:
+                break
             x = x.to(device)
             y = y.to(device)
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):

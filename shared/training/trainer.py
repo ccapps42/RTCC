@@ -36,7 +36,7 @@ class Trainer:
             config.lr_max, config.lr_min,
         )
         self.logger = DBLogger(config.db_path, run_id)
-        self.scaler = torch.amp.GradScaler("cuda")
+        # No GradScaler — we use bfloat16 (fp32 dynamic range), scaler is fp16-only
 
         self._opt_step = 0       # optimizer steps (primary counter)
         self._tokens_seen = 0
@@ -69,8 +69,9 @@ class Trainer:
         print(f"Settings > Windows Update > Advanced > Pause updates for 5 weeks")
         print(f"Starting from step {self._opt_step}, target {self.cfg.total_steps}")
 
-        accum_loss = 0.0
-        accum_aux = 0.0
+        # Device-side accumulators — defer GPU->CPU sync to once per optimizer step
+        accum_loss_t = torch.zeros((), device=self.device)
+        accum_aux_t  = torch.zeros((), device=self.device)
         accum_count = 0
         step_start = time.perf_counter()
         run_start = time.perf_counter()
@@ -97,22 +98,23 @@ class Trainer:
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 loss, aux_loss = self._forward(x, y, n_loops)
-                total = loss + (aux_loss or 0.0)
-                (self.scaler.scale(total / self.cfg.grad_accum_steps)).backward()
+                total = loss if aux_loss is None else loss + aux_loss
+                (total / self.cfg.grad_accum_steps).backward()
 
-            accum_loss += loss.item()
-            accum_aux += (aux_loss.item() if aux_loss is not None else 0.0)
+            # Accumulate on device — no GPU->CPU sync until optimizer step
+            accum_loss_t += loss.detach()
+            if aux_loss is not None:
+                accum_aux_t += aux_loss.detach()
             accum_count += 1
 
             if accum_count == self.cfg.grad_accum_steps:
-                self.scaler.unscale_(self.optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(
+                # Queue up all GPU work first, then sync once at the end
+                grad_norm_t = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.cfg.grad_clip
-                ).item()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                )
+                self.optimizer.step()
                 self.scheduler.step()
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
 
                 self._opt_step += 1
                 sec = time.perf_counter() - step_start
@@ -120,10 +122,17 @@ class Trainer:
                 tokens_this_step = x.numel() * self.cfg.grad_accum_steps
                 self._tokens_seen += tokens_this_step
 
+                # Single sync point — pulls loss, aux, grad_norm in one barrier
+                loss_val = accum_loss_t.item() / accum_count
+                aux_val  = accum_aux_t.item()  / accum_count
+                grad_norm = grad_norm_t.item()
+                accum_loss_t.zero_()
+                accum_aux_t.zero_()
+
                 self.logger.log_step(
                     step=self._opt_step,
-                    loss=accum_loss / accum_count,
-                    aux_loss=(accum_aux / accum_count) or None,
+                    loss=loss_val,
+                    aux_loss=aux_val or None,
                     grad_norm=grad_norm,
                     lr=lr,
                     n_loops=n_loops,
@@ -146,12 +155,10 @@ class Trainer:
                         with torch.no_grad():
                             rho_str = f"| rho {torch.sigmoid(self.model.lti.a_param).max().item():.4f} "
                     print(f"step {self._opt_step:6d}/{self.cfg.total_steps} ({pct:5.1f}%) "
-                          f"| loss {accum_loss/accum_count:.4f} "
+                          f"| loss {loss_val:.4f} "
                           f"| lr {lr:.2e} | norm {grad_norm:.2f} "
                           f"{rho_str}| {tokens_this_step/sec:.0f} tok/s | eta {eta}")
 
-                accum_loss = 0.0
-                accum_aux = 0.0
                 accum_count = 0
                 step_start = time.perf_counter()
 

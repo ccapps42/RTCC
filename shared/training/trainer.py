@@ -1,6 +1,7 @@
 """Base Trainer — tracks optimizer steps throughout. total_steps = optimizer steps."""
 import math
 import signal
+import sys
 import time
 import sqlite3
 from datetime import datetime, timezone
@@ -43,7 +44,10 @@ class Trainer:
         signal.signal(signal.SIGTERM, self._handle_interrupt)
 
     def _handle_interrupt(self, *_):
-        print("\nInterrupt received — will checkpoint at next opportunity.")
+        if self._interrupted:
+            print("\nForce exit.")
+            sys.exit(1)
+        print("\nInterrupt received — will checkpoint at next opportunity (Ctrl-C again to force quit).")
         self._interrupted = True
 
     def train(self, data_iter):
@@ -155,9 +159,10 @@ class Trainer:
                 if self._opt_step % self.cfg.eval_every == 0:
                     self._do_eval(self._opt_step)
 
-        # Final checkpoint and eval
+        # Final checkpoint; skip eval on interrupt to exit promptly
         self._do_checkpoint(self._opt_step)
-        self._do_eval(self._opt_step)
+        if not self._interrupted:
+            self._do_eval(self._opt_step)
         self.logger.flush()
 
         status = "interrupted" if self._interrupted else "complete"

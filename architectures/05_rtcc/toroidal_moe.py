@@ -1,7 +1,7 @@
 """ToroidalMoE — the core RTCC innovation.
 
 Forward pass:
-  1. Reshape embedding to 2D grid [BS, 1, H, W] and circular-pad
+  1. Reshape embedding to 2D grid [BS, 1, H, W] and circular-pad via torch.cat
   2. Unfold into overlapping patches — each expert sees a patch_size x patch_size window
   3. Apply position-fixed expert MLPs (all active, no routing)
   4. Overlap-add fold back to grid
@@ -44,31 +44,32 @@ class ToroidalMoE(nn.Module):
         B, S, D = x.shape
         p = self.overlap
 
-        # 1. Reshape to grid and circular-pad in one shot
+        # 1. Reshape to grid and circular-pad via torch.cat
+        # (F.pad mode='circular' uses scatter ops and is slower than two cats here)
         x_grid = x.view(B * S, 1, self.H, self.W)
-        x_pad  = F.pad(x_grid, (p, p, p, p), mode='circular')  # [BS, 1, H+2p, W+2p]
+        x_pad = torch.cat([x_grid[:, :, -p:, :], x_grid, x_grid[:, :, :p, :]], dim=2)
+        x_pad = torch.cat([x_pad[:, :, :, -p:], x_pad, x_pad[:, :, :, :p]], dim=3)
 
-        # 2. Unfold patches
+        # 2. Unfold patches — einsum handles non-contiguous strides natively, no .contiguous() needed
         patches = F.unfold(x_pad, kernel_size=self.patch_size, stride=self.stride)
-        # patches: [BS, patch_dims, n_experts]
-        patches = patches.permute(0, 2, 1).contiguous()         # [BS, n_experts, patch_dims]
+        patches = patches.permute(0, 2, 1)                     # [BS, n_experts, patch_dims]
 
         # 3. Fused gate+up projection then SwiGLU
-        gu = torch.einsum("bep,eph->beh", patches, self.gate_up)  # [BS, n_experts, 2*hidden]
-        g, u = gu.chunk(2, dim=-1)                                 # each [BS, n_experts, hidden]
+        gu = torch.einsum("bep,eph->beh", patches, self.gate_up)
+        g, u = gu.chunk(2, dim=-1)
         h = F.silu(g) * u
 
         # 4. Down projection
-        out_patches = torch.einsum("beh,ehp->bep", h, self.down)   # [BS, n_experts, patch_dims]
+        out_patches = torch.einsum("beh,ehp->bep", h, self.down)
 
         # 5. Overlap-add fold
         Hp, Wp = self.H + 2 * p, self.W + 2 * p
         folded = F.fold(
-            out_patches.permute(0, 2, 1),                          # [BS, patch_dims, n_experts]
+            out_patches.permute(0, 2, 1),
             output_size=(Hp, Wp),
             kernel_size=self.patch_size,
             stride=self.stride,
-        )                                                            # [BS, 1, Hp, Wp]
+        )                                                       # [BS, 1, Hp, Wp]
 
-        # 6. Trim padding and reshape
-        return folded[:, 0, p:p + self.H, p:p + self.W].contiguous().view(B, S, D)
+        # 6. Trim padding and reshape (reshape handles non-contiguous slice automatically)
+        return folded[:, 0, p:p + self.H, p:p + self.W].reshape(B, S, D)

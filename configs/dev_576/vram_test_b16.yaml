@@ -11,7 +11,7 @@ max_seq_len: 1024
 prelude_layers: 6
 coda_layers: 1
 max_loop_iters: 8
-total_steps: 30
+total_steps: 100
 warmup_steps: 10
 batch_size: 16
 grad_accum_steps: 2

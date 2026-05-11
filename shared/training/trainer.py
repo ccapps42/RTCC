@@ -154,10 +154,15 @@ class Trainer:
                     if hasattr(self.model, 'lti'):
                         with torch.no_grad():
                             rho_str = f"| rho {torch.sigmoid(self.model.lti.a_param).max().item():.4f} "
+                    vram_str = ""
+                    if torch.cuda.is_available():
+                        peak_gb = torch.cuda.max_memory_allocated() / 1e9
+                        vram_str = f"| vram {peak_gb:.2f}GB "
+                        torch.cuda.reset_peak_memory_stats()
                     print(f"step {self._opt_step:6d}/{self.cfg.total_steps} ({pct:5.1f}%) "
                           f"| loss {loss_val:.4f} "
                           f"| lr {lr:.2e} | norm {grad_norm:.2f} "
-                          f"{rho_str}| {tokens_this_step/sec:.0f} tok/s | eta {eta}")
+                          f"{rho_str}{vram_str}| {tokens_this_step/sec:.0f} tok/s | eta {eta}")
 
                 accum_count = 0
                 step_start = time.perf_counter()

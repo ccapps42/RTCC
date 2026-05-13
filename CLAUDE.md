@@ -120,6 +120,16 @@ External, not in this repo:
 
 Both are referenced by absolute path in `shared/config.py` defaults.
 
+## Discipline: preserve CART parity
+
+The paper's central comparison is RTCC (this project) vs CART at d=1024. The comparison is uniquely clean because **the only thing that differs is the coda FFN swap** — same training data (CART's tokenized bins, same order via FixedOrderDataset), same prelude, same recurrent core, same hyperparameters, same training schedule.
+
+Every "while we're at it" tweak to the prelude, recurrent core, optimizer, scheduler, data pipeline, or curriculum weakens this comparison. If reviewers can attribute any RTCC delta to something other than the coda change, the contribution becomes ambiguous.
+
+**Rule:** when implementing the new toroid-top-K-coda architecture, copy CART's config and code exactly; modify ONLY the coda layer. Any change to anything else needs explicit justification AND a matched-modification of CART's d=1024 reference run (or explicit acknowledgement in the paper).
+
+This rule applies even when a small tweak looks obviously beneficial. The comparison's value comes from its precision — that's the methodological asset to protect.
+
 ## Key constants (do not casually change)
 
 - **Tokenizer:** GPT-2 (vocab 50,257) — pinned by training data

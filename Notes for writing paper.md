@@ -160,21 +160,54 @@ Negative result: limited evidence of interpretable latent CoT in recurrent-depth
 
 ## Parameter counts and leverage
 
-> **Note:** Numbers below are pre-run estimates from model instantiation. Update this section once actual paper runs complete.
+Updated 2026-05-24 to reflect the coda-placement architecture at d=1024.
 
-RTCC uses weight sharing in the recurrent core (same `RTCCBlock` executed R times). Effective parameters = total + core_block × (R − 1).
+RTCC's recurrent core is byte-identical to CART (same SwiGLU FFN, same weight
+sharing across R loops). The only structural difference is the coda's FFN slot,
+which runs once per forward pass — so leverage characterizations carry over from
+CART unchanged. The relevant comparison is **per-cell coda size** vs CART's dense
+coda, since that's the only place the architectures differ.
 
-| Config | Total params | Effective params | Leverage | Core block |
-|--------|-------------|-----------------|----------|------------|
-| RTCC d=768 R=8 | 74.4M | 92.2M | 1.24x | 2.5M |
+### Top-line numbers (measured on K2_O1, GPU smoke at d=1024)
 
-CART comparison (for context):
+| Component | RTCC d=1024 R=6 K2_O1 |
+|---|---|
+| Total params | **125.6M** |
+| Effective params (recurrent core × R=6) | matches CART's leverage (recurrent body unchanged) |
+| Coda FFN params (this is the only difference from CART) | see below |
 
-| Config | Total params | Effective params | Leverage |
-|--------|-------------|-----------------|----------|
-| CART d=768 R=8 P=6 | 75.3M | 116.6M | 1.55x |
-| CART d=1024 R=8 P=6 | 125.1M | 200.3M | 1.60x |
+### Coda FFN comparison (d=1024)
 
-RTCC's lower leverage (1.24x vs 1.55x) reflects that the ToroidalMoE core block is more parameter-efficient (2.5M) than CART's SwiGLU FFN core (5.9M). The recurrent core does more computation per parameter — the flip side is less amplification from weight sharing. Worth addressing in the paper.
+The only architectural difference between RTCC and CART. All other parameter
+counts are identical by construction.
 
-RTCC has no 1024-dim config — the toroidal grid must equal `model_dim` exactly (32×24=768), so a 1024-dim variant would require a new grid layout (e.g. 32×32) and is not currently planned.
+| | CART dense coda | RTCC coda (K2_O1) | RTCC coda (K16_O4) |
+|---|---|---|---|
+| Up projection (1024 → 4096) | n/a | 4.19M | 4.19M |
+| Experts (64 × SwiGLU on patch) | n/a | 0.50M | 1.55M |
+| Down projection (4096 → 1024) | n/a | 4.19M | 4.19M |
+| Dense SwiGLU(1024 → 2816 → 1024) | 8.65M | n/a | n/a |
+| **Coda FFN total** | **8.65M** | **8.88M** | **9.93M** |
+| Active params per token (top-K compute) | 8.65M | ~8.43M (up + 2 experts + down) | ~8.78M (up + 16 experts + down) |
+
+RTCC at the lightest cell is at parameter-and-compute parity with CART; the
+heaviest cell is ~15% larger. This is acceptable given the comparison is "what
+does a richer toroid coda achieve under otherwise-identical conditions" rather
+than "is the toroid more efficient per parameter."
+
+### Throughput (measured 2026-05-24, RTX 3090, BF16, AdamW8bit, batch=4 × grad_accum=8)
+
+| Cell | tok/sec | 1B-token run time |
+|---|---|---|
+| K2_O1 (lightest) | 19,210 | 14.5 h |
+| K16_O4 (heaviest) | 14,339 | 19.4 h |
+| Mean across grid (est.) | ~17,000 | ~16.3 h |
+
+Full 16-cell sweep at slots=1: **~261 h ≈ 11 days** wall-clock.
+
+CART d=1024 R=6 reference: ~33K tok/s, ~8.5 h per 30,500-step run. RTCC pays
+~2× the per-step cost because the toroid coda's
+`up_proj + unfold + router + gather + 2 einsums + scatter_add + fold + down_proj`
+does not reduce to a clean GEMM stack. The toroid runs once per forward (not R
+times) so the slowdown is bounded — recurrent-core placement would have been
+~6× slower.

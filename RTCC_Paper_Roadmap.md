@@ -83,116 +83,110 @@ Input tokens
 
 ---
 
-## Paper 2 — RTCC (Minimal)
-*Recurrent Toroidal Cortical Columns. Single architectural change from CART: SwiGLU FFN in the recurrent core is replaced by ToroidalMoE. Everything else is identical.*
+## Paper 2 — RTCC (Coda Top-K Toroidal MoE)
+*Recurrent Toroidal Cortical Columns. Single architectural change from CART: the
+dense SwiGLU FFN in the **coda layer** is replaced by an up-projected toroidal
+top-K MoE. The CART backbone (prelude + recurrent core + everything else) is
+unchanged.*
 
 ### What Changes from CART
 
-Only the FFN module inside the recurrent core block changes.
+Only the coda FFN slot. The prelude and recurrent core are byte-for-byte CART.
 
 ```
-CoreBlock (CART):    cross-attn(h, K, V) → SwiGLU FFN(d → 2048 → d)
-CoreBlock (RTCC):    cross-attn(h, K, V) → ToroidalMoE(d → d)
+CodaBlock (CART):  MLA self-attn → SwiGLU(1024 → 2816 → 1024)
+CodaBlock (RTCC):  MLA self-attn → up_proj(1024 → 4096)
+                                → TopKToroidMoE on 64×64 sheet
+                                → down_proj(4096 → 1024)
 ```
 
-All other blocks (prelude, coda), all training parameters, and the full loop mechanics
-(hyper-connections, LIE, LTI, K/V pre-computation from e) are carried over unchanged.
+The TopKToroidMoE:
+- Treats the up-projected residual as a 64×64 **toroidal sheet** (4096 dims)
+- 8×8 = **64 position-fixed experts**, each on a `patch_size × patch_size` patch
+- **Linear router** picks **top-K of 64 experts** per token
+- Each selected expert: SwiGLU on its patch (`patch_dims → expert_hidden → patch_dims`)
+- **Toroidal wrap** on both axes (circular padding); zero-pad as a B4 ablation
+- **Wrap-add fold** ensures full toroidal symmetry post-fold
 
-### Parameters — All Identical to CART Except:
+All other components — embedding, prelude (6 dense layers), recurrent core (looped
+6 times, dense SwiGLU FFN), MLA attention with KV latent = d/4, RoPE in prelude/coda
+only, hyper-connections (n=3), LIE, LTI gating, RMSNorm, tied embeddings, Llama-2
+32K tokenizer — are inherited from CART unchanged.
 
-| Component | CART | RTCC Paper 2 |
+### Locked Configuration (single backbone, swept coda)
+
+| Parameter | Value | Source |
 |---|---|---|
-| Core FFN | SwiGLU, hidden=2,048 | ToroidalMoE (see below) |
-| vocab_size | 32,000 | 32,000 ← *must fix in current code (currently 50,257)* |
-| Core attention | MLA cross-attention | MLA cross-attention ← *must fix in current code (currently self-attention)* |
-| LTI formula | `A·h + block_out` | `A·h + block_out` ← *must fix in current code (currently adds B·e term)* |
-| Everything else | — | Identical |
+| `d_model` | 1024 | Matches CART d=1024 exactly |
+| Prelude layers (P) | 6 | CART Stage 2 winner |
+| Core loops (R) | 6 | CART Stage 2 winner (R* = 6) |
+| Coda layers | 1 | CART |
+| `n_heads` (prelude/recurrent/coda) | 16 / 16 / 16 | head_dim = 64 |
+| `mla_latent_dim` | 256 | d / 4 |
+| `vocab_size` | 32,000 | Llama-2 BPE (NousResearch/Llama-2-7b-hf) — CART parity |
+| Sheet (in coda only) | 64 × 64 | up_dim = 4096 |
+| Stride (in coda) | 8 | → 8 × 8 = 64 experts |
+| Aux loss coef | 0.01 | DeepSeek-style load-balance |
+| LTI formulation | `h = sigmoid(A)·h_input + transformer_out` | CART |
+| Total params | ~125M | At any ablation cell |
 
-### Sweep — d=576 (24×24 square grid) — 11 runs
+### Ablation Grid (16 cells)
 
-The 576-dim hidden vector reshapes in-place to a **24×24 = 576** square grid.
+**K × overlap = {2, 4, 8, 16} × {1, 2, 3, 4} = 16 training runs**
 
-d=576 is chosen for three reasons:
-- 24×24 is a perfect square → symmetric torus, no axis bias, all experts topologically equivalent
-- GCD(24, 24) = 24; after the private_core ≥ 3×3 floor, strides {4, 6, 8} survive → 7 valid sweep configurations across the 11%–61% privacy range
-- head_dim=64 maintained: n_heads = 576/64 = 9 (valid; CART itself sweeps non-power-of-2 head counts)
+`patch_size = stride + overlap = 8 + overlap`, so patch sizes are {9, 10, 11, 12}.
+`expert_hidden` auto-derives at compression ratio 0.4, rounded to multiples of 8:
 
-**Fixed across all sweep runs:**
+| overlap | patch | patch_dims | expert_hidden | compression |
+|---|---|---|---|---|
+| 1 | 9×9 | 81 | 32 | 0.40 |
+| 2 | 10×10 | 100 | 40 | 0.40 |
+| 3 | 11×11 | 121 | 48 | 0.40 |
+| 4 | 12×12 | 144 | 56 | 0.39 |
 
-| Parameter | Value | Notes |
+This per-cell scaling prevents conflating geometry with per-expert capacity across
+the overlap axis.
+
+### Full 20-Run Plan
+
+| Group | Count | Notes |
 |---|---|---|
-| `d_model` | 576 | |
-| Grid | 24 × 24 | Square — symmetric torus |
-| `n_heads` | 9 | 576 / 64 |
-| `d_kv_latent` | 144 | d / 4 |
-| `vocab_size` | 32,000 | Llama-2 BPE — matches CART |
-| `expert_hidden` | TBD (512 recommended) | See Sweep Plan open questions |
-| All other params | Identical to CART | |
+| K × overlap ablation cells | 16 | `configs/paper_1024_rtcc_coda/K{2,4,8,16}_O{1,2,3,4}.yaml` |
+| Dense baseline (no new run) | 0 | CART d=1024 R=6 P=6 from `K:\projects\Model_Paper_1\results.db` is the direct comparator (3 seeds + 6 diagnostic ablations) |
+| B4 flat-grid baseline | 1 | Same geometry as the winning cell with `padding_mode: zeros` (isolates the toroidal-wrap contribution) |
+| Extra seeds at winner | 2 | seeds 137 and 271 for 3-seed stability evidence |
+| lm-eval-harness benchmarks | 1 | Inference-only on the winning checkpoint |
+| **Total training runs** | **19** | Plus 1 inference-only eval |
 
-**Sweep configurations (all on 24×24 grid):**
+B4 and the seed configs are generated post-winner via
+`python scripts/gen_winner_configs.py --cell K<X>_O<Y>`.
 
-| Run | Stride | Overlap | Patch | Experts | Privacy | Role |
-|---|---|---|---|---|---|---|
-| S2 | 3 | 1-cell | 4×4 | 8×8 = 64 | 25.0% | Pair A |
-| S1 | 4 | 2-cell | 6×6 | 6×6 = 36 | 11.1% | Low-privacy anchor |
-| S4 | 4 | 1-cell | 5×5 | 6×6 = 36 | 36.0% | Pair B |
-| S3 | 6 | 2-cell | 8×8 | 4×4 = 16 | 25.0% | Pair A |
-| S6 | 6 | 1-cell | 7×7 | 4×4 = 16 | 51.0% | Mid-high anchor |
-| S5 | 8 | 2-cell | 10×10 | 3×3 = 9 | 36.0% | Pair B |
-| S7 | 8 | 1-cell | 9×9 | 3×3 = 9 | 60.5% | High-privacy anchor (primary) |
+### Training (matches CART d=1024 Stage 2 exactly)
 
-Expert range: 9–64, patch range: 4×4–10×10. Pairs A and B each hold privacy % constant while varying
-overlap depth — embedded ablations at no extra training cost. Full specification in **RTCC_Sweep_Plan.md**.
+| Setting | Value |
+|---|---|
+| `seq_len` | 1,024 |
+| `batch_size` | 4 |
+| `grad_accum` | 8 |
+| Effective batch | 32 sequences = 32,768 tokens/step |
+| `total_steps` | 30,500 |
+| Total tokens | ~1B (matches CART) |
+| `warmup_steps` | 2,000 |
+| `lr_max` | 3e-4 |
+| `lr_min` | 3e-5 |
+| LR schedule | Cosine decay with linear warmup |
+| Optimizer | AdamW8bit (bitsandbytes) |
+| Eval frequency | every 2,500 steps |
+| Checkpoint frequency | every 1,000 steps |
+| Training data | `K:\projects\Model_Paper_1\data\stage2\stage2_train.bin` (FixedOrderDataset, same seed/order as CART) |
+| Validation | CART val bins (tiny/wiki/edu, 50 batches each) |
+| Hardware | RTX 3090 (single, slots=1) |
 
-### CART Comparison Run — d=768 — 2 runs
+### Status
 
-One pair of runs at CART's exact dimension so perplexity curves can be directly compared.
-Uses the best-performing privacy setting from the sweep.
-
-| Parameter | Value | Notes |
-|---|---|---|
-| `d_model` | 768 | Matches CART Stage 2 exactly |
-| Grid | 32 × 24 | Non-square — axis bias noted in paper |
-| Stride | 8 | Only valid stride at d=768 |
-| Patch | 9×9, overlap=1 | 1-cell; mirrors S7 privacy level (60.5%) |
-| Experts | 4×3 = 12 | Non-square layout |
-| Privacy | 60.5% | Like-for-like with sweep winner |
-| Sweep R, P | Same as CART Stage 2 | Direct curve comparison |
-
-Runs: 1 RTCC-768 + 1 Dense-FFN-768 baseline. Total: 2 additional runs beyond the sweep.
-These validate that sweep findings at d=576 generalize to the CART-comparable dimension and
-allow a direct perplexity number comparison against CART's published Stage 2 results.
-
-### Ablation Set (5 architectures, all identical except core FFN)
-
-| Arch | Core FFN | Tests |
-|---|---|---|
-| 01 Dense FFN | SwiGLU (identical to CART) | Validates implementation — should reproduce CART perplexity |
-| 02 Standard MoE | Top-k routed MoE | Does the torus beat routing-based MoE? |
-| 03 SliceMoE flat | Non-overlapping slices, no torus | No overlap, no wrap |
-| 04 Flat grid overlap | Overlapping patches, zero-pad boundary | Overlap yes, torus wrap no |
-| 05 RTCC | Overlapping patches, circular-pad boundary | Full toroidal — the paper claim |
-
-The 04 vs. 05 comparison directly isolates the torus wrap contribution: identical code, only
-`F.pad(mode='constant', value=0)` vs. `_toroidal_pad` (circular).
-
-### Changes Required in Current Code
-
-The current RTCC_Paper_2 codebase has three deviations from CART that must be fixed before paper runs:
-
-1. **`shared/config.py`**: `vocab_size` is 50,257 (GPT-2). **Locked to 32,000** (Llama-2 BPE, matches CART).
-2. **Core attention**: Current `RTCCBlock` and all arch 01–05 core blocks use `MLASelfAttention`.
-   Change to `MLACrossAttention` (Q from h, K/V pre-computed from e) matching CART exactly.
-   This requires adding `MLAKVProjection` to each model and passing K, V through the loop,
-   same pattern as CART's `cart.py`.
-3. **LTI**: Current `LTIInjection` adds a `B·e` term: `A·h + B·e + block_out`.
-   Remove the `B·e` term. CART's formula is `A·h + block_out`; prelude injection is handled
-   by cross-attention, not a separate additive path.
-
-### Training — Identical to CART Stage 2
-
-Same seq_len, batch, tokens, optimizer, LR schedule. Sweep same R and P values so that
-perplexity curves are directly comparable across (R, P) pairs.
+Code complete, sweep launched as of 2026-05-24. First cell (K2_O1) was achieving
+wiki PPL parity with CART by step 5,000 and beating CART by ~5% at step 10,000.
+Expected sweep wall-clock: ~11 days at slots=1.
 
 ---
 
@@ -299,20 +293,21 @@ multi-frequency / cortical-rhythm cluster. These are best introduced together as
 
 ## Summary Table — Paper Series
 
-| | Paper 1 (CART) | Paper 2 (RTCC minimal) | Paper 3 (RTCC V2 full) |
+| | Paper 1 (CART) | Paper 2 (RTCC, coda Top-K Toroidal MoE) | Paper 3 (RTCC V2 full) |
 |---|---|---|---|
-| Novel claim | Recurrent depth > feed-forward depth at equal params | Toroidal FFN > SwiGLU in RDT | Full RTCC with expanded sheet, GQA+SWA prelude, Muon, YaRN |
-| Core FFN | SwiGLU | ToroidalMoE | ToroidalMoE (projected, 64 experts) |
-| d_model | 256–1024 (swept) | 576 (sweep) + 768 (CART cmp) | 1,024 |
-| Vocab | 32,000 | 32,000 | 32,000 |
-| Loop count | Swept | Swept | 16 |
-| Expert grid | — | n×n square, 9–64 experts (swept) | 8×8 = 64 (square symmetric) |
-| Sheet space | — | In-place (24×24) | Projected (1024 → 5,184) |
-| Prelude attn | MLA self + cross-attn core | MLA cross-attn core (matches CART) | GQA + SWA + sink tokens |
-| Optimizer | AdamW | AdamW | Hybrid Muon + AdamW |
+| Novel claim | Recurrent depth > feed-forward depth at equal params | Toroidal Top-K MoE in coda > dense FFN coda under otherwise-identical CART backbone | Full RTCC with expanded sheet, GQA+SWA prelude, Muon, YaRN |
+| What changes | — | Coda FFN only (prelude + recurrent core = CART exactly) | Multi-axis (recurrent core sheet, prelude attn, optimizer, RoPE) |
+| FFN placement | SwiGLU in prelude/core/coda | SwiGLU in prelude/core; **TopKToroidMoE in coda** | TopKToroidMoE in recurrent core (full V2) |
+| d_model | 256–1024 (swept) | **1024** (locked to CART) | 1,024 |
+| Vocab | 32,000 | 32,000 (Llama-2 BPE) | 32,000 |
+| Loop count | Swept | **R = 6** (locked to CART Stage 2 winner) | 16 |
+| Coda sheet | — | Up-projected 1024 → 4096 = 64×64 toroidal, 8×8 = 64 experts | Recurrent-core 1024 → 5184 |
+| Ablation grid | — | **K × overlap = {2,4,8,16} × {1,2,3,4} = 16 cells** | NoOverlap / No-Wrap / NoResidual / overlap sweep / R sweep |
+| Routing | — | **Linear router, top-K of 64 experts** | Top-K (K TBD) |
+| Optimizer | AdamW | AdamW8bit (bitsandbytes) | Hybrid Muon + AdamW |
 | RoPE | Standard | Standard | YaRN |
-| Training tokens | ~1B | ~1B | ~15B |
-| Hardware | RTX 3050 / 3090 | RTX 3050 / 3090 | RTX 3090 |
-| Status | **Stage 2 in progress** | Needs 2 code fixes, then runs | Planned post Paper 2 |
+| Training tokens | ~1B | **~1B (30,500 steps, matches CART exactly)** | ~15B |
+| Hardware | RTX 3050 / 3090 | RTX 3090 (slots=1) | RTX 3090 |
+| Status | Complete (Stage 2 + diagnostic ablations) | **Sweep launched 2026-05-24, ~11 days wall-clock** | Planned post Paper 2 |
 
-*— Chad A. Capps, May 2026*
+*— Chad A. Capps, updated 2026-05-24*

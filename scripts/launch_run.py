@@ -129,9 +129,16 @@ def main():
     print(f"Registered run_id={run_id} in DB")
 
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained("gpt2", cache_dir=cfg.hf_cache_dir)
-    # Override vocab_size from actual tokenizer — config default may not match
-    cfg.vocab_size = len(tokenizer)
+    # CART's training bins are tokenized with NousResearch/Llama-2-7b-hf (32K vocab).
+    # Must match exactly or the vs-CART comparison is invalidated.
+    tokenizer = AutoTokenizer.from_pretrained(
+        "NousResearch/Llama-2-7b-hf", cache_dir=cfg.hf_cache_dir
+    )
+    assert tokenizer.vocab_size == 32_000, (
+        f"Expected Llama-2 32K vocab, got {tokenizer.vocab_size}. "
+        f"This breaks CART parity — investigate before proceeding."
+    )
+    cfg.vocab_size = tokenizer.vocab_size
 
     import torch
     torch.manual_seed(cfg.seed)

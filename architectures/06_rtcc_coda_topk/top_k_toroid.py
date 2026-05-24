@@ -7,8 +7,13 @@ processes its fixed patch_size x patch_size patch from the toroidally-padded
 sheet via a small SwiGLU MLP. Selected expert outputs are routing-weighted,
 scattered to per-expert positions, and overlap-add folded back to the sheet.
 
-Contributions in the wrap-zone of the padded grid are discarded by the
-final crop (matches the original ToroidalMoE convention in 05_rtcc).
+After folding, wrap-zone contributions are added back to their toroidally-
+equivalent positions in the original grid before cropping — so every pixel
+receives the full set of contributions from every expert whose patch contains
+it (including via wrap). This makes the geometry true to the toroid name.
+For padding_mode='zeros', the wrap zones are zero and the wrap-add is a
+mathematical no-op, keeping the flat-grid B4 baseline structurally identical
+in the code path.
 
 Returns (output, aux_loss). aux_loss uses the DeepSeek-MoE formulation:
     L_aux = n_experts * sum_i (frac_i * mean_prob_i)
@@ -112,13 +117,33 @@ class TopKToroidMoE(nn.Module):
         out_all.scatter_add_(dim=1, index=idx_p, src=out_patches)
 
         # 9. Overlap-add fold back to padded grid
-        Hp, Wp = self.H + 2 * p, self.W + 2 * p
+        H, W = self.H, self.W
+        Hp, Wp = H + 2 * p, W + 2 * p
         folded = F.fold(
             out_all.permute(0, 2, 1),
             output_size=(Hp, Wp),
             kernel_size=self.patch_size,
             stride=self.stride,
-        )
+        )[:, 0]                              # [N, Hp, Wp]
 
-        # 10. Crop wrap-zone, reshape back to [B, S, D]
-        return folded[:, 0, p:p + self.H, p:p + self.W].reshape(B, S, D), aux_loss
+        # 10. Toroidal wrap-add: contributions that fell into the padded
+        # wrap zones rotate to their toroidally-equivalent positions in
+        # the original grid before the final crop.
+        # Padded layout from torch.cat above:
+        #   padded rows [0:p]      = original rows [H-p:H]  (top wrap)
+        #   padded rows [p:p+H]    = original rows [0:H]
+        #   padded rows [p+H:Hp]   = original rows [0:p]    (bottom wrap)
+        # Same for columns.
+        out_grid = folded[:, p:p+H, p:p+W].clone()
+        # Edge bands
+        out_grid[:, -p:, :]   += folded[:, :p,     p:p+W]    # top wrap     -> bottom of original
+        out_grid[:, :p,  :]   += folded[:, p+H:,   p:p+W]    # bottom wrap  -> top of original
+        out_grid[:, :,  -p:]  += folded[:, p:p+H,  :p]       # left wrap    -> right of original
+        out_grid[:, :,  :p]   += folded[:, p:p+H,  p+W:]     # right wrap   -> left of original
+        # Four corner regions (each padded corner equals one corner of original)
+        out_grid[:, -p:, -p:] += folded[:, :p,     :p]       # top-left    -> bottom-right
+        out_grid[:, -p:, :p]  += folded[:, :p,     p+W:]     # top-right   -> bottom-left
+        out_grid[:, :p,  -p:] += folded[:, p+H:,   :p]       # bottom-left -> top-right
+        out_grid[:, :p,  :p]  += folded[:, p+H:,   p+W:]     # bottom-right-> top-left
+
+        return out_grid.reshape(B, S, D), aux_loss

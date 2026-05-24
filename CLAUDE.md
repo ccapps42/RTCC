@@ -34,7 +34,7 @@ Each architecture directory has `config.py` (subclass of `shared.config.BaseConf
 - `checkpoint.py` — save/load + prune-to-last-N.
 
 `shared/data/`:
-- `loader.py` — `FixedOrderDataset` reads CART's `stage2_train.bin` (uint16, GPT-2 tokenizer). No shuffling — same token order across all runs for sweep comparability.
+- `loader.py` — `FixedOrderDataset` reads CART's `stage2_train.bin` (uint16, Llama-2 32K tokenizer). No shuffling — same token order across all runs for sweep comparability.
 - `validation.py` — `ValidationDataset` reads `data/validation/val.parquet`. **No longer used** in eval (we switched to CART val bins for parity).
 - `curriculum.py` — phase/loop-count schedule.
 
@@ -115,7 +115,7 @@ Every `eval_every` steps:
 ## Training data
 
 External, not in this repo:
-- Training: `K:\projects\Model_Paper_1\data\stage2\stage2_train.bin` — CART's pre-tokenized 1B token bin (GPT-2 tokenizer)
+- Training: `K:\projects\Model_Paper_1\data\stage2\stage2_train.bin` — CART's pre-tokenized 1B token bin (NousResearch/Llama-2-7b-hf tokenizer, 32K vocab)
 - Validation: `K:\projects\Model_Paper_1\data\val\{tinystories,wikipedia,fineweb_edu}_val.bin` — CART val bins, used for the three per-source PPLs (matches CART eval exactly)
 
 Both are referenced by absolute path in `shared/config.py` defaults.
@@ -132,7 +132,7 @@ This rule applies even when a small tweak looks obviously beneficial. The compar
 
 ## Key constants (do not casually change)
 
-- **Tokenizer:** GPT-2 (vocab 50,257) — pinned by training data
+- **Tokenizer:** NousResearch/Llama-2-7b-hf (vocab 32,000) — pinned by training data; matches CART exactly
 - **R (max_loop_iters):** TBD, see `memory/open_question_R_value.md`. CART Stage 2 sweeping R ∈ {6, 8, 10}; inherit winner before paper runs.
 - **P (prelude_layers):** 6 — validated by CART
 - **Coda layers:** 1 — validated by CART

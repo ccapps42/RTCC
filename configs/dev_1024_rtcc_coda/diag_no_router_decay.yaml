@@ -1,0 +1,49 @@
+# Diagnostic run: K2_O1 geometry, short (3000 steps ~ 90 min on 3090).
+# Tests whether excluding the router from weight decay (one-line change in
+# shared/training/optimizer.py, committed 2026-05-24) lets the router escape
+# the near-uniform-output collapse observed in the original K2_O1 run.
+#
+# What success looks like (re-run the router diagnostic on the final checkpoint):
+#   - Router weight L2 grows (not shrinks) over 3000 steps
+#   - Per-token logit max-min spread > 1.0 (was 0.52 at K2_O1 step 13000)
+#   - Mean dominant top-2 weight > 0.55 (was 0.502)
+#   - Some tokens with dominant weight > 0.7
+# What failure looks like:
+#   - Router weight L2 still shrinks
+#   - Per-token weights remain pinned at ~0.5/0.5
+#   - Implication: aux loss is also a culprit; next step is to also drop coef
+#
+# Launch:
+#   python scripts/launch_run.py --arch rtcc_coda_topk \
+#       --config configs/dev_1024_rtcc_coda/diag_no_router_decay.yaml
+#
+# Then re-run the router diagnostic script (was in the inline analysis on
+# 2026-05-24) against the last checkpoint to compare router stats vs K2_O1.
+model_dim: 1024
+n_heads_prelude: 16
+n_heads_recurrent: 16
+n_heads_coda: 16
+mla_latent_dim: 256
+max_seq_len: 1024
+prelude_layers: 6
+coda_layers: 1
+max_loop_iters: 6
+total_steps: 3000
+warmup_steps: 200
+lr_max: 3.0e-4
+lr_min: 3.0e-5
+batch_size: 4
+grad_accum_steps: 8
+seed: 42
+checkpoint_every: 500
+keep_last_n_checkpoints: 6
+eval_every: 1000
+hardware: rtx3090
+run_name: dev_1024_rtcc_coda/diag_no_router_decay
+# Toroid coda — K2_O1 geometry exactly (so direct comparison)
+up_dim: 4096
+grid_side: 64
+patch_size: 9
+stride: 8
+top_k: 2
+moe_aux_loss_coef: 0.01   # unchanged from original — testing weight-decay fix in isolation

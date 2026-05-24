@@ -1,15 +1,24 @@
 """
 Paper run orchestrator — launches N concurrent training runs, refills slots as they finish.
 
-Usage:
-    python scripts/orchestrate_paper.py            # 2 concurrent slots
-    python scripts/orchestrate_paper.py --slots 3  # 3 concurrent slots
-    python scripts/orchestrate_paper.py --dry-run  # print queue, don't launch
+Auto-discovers every YAML in configs/paper_1024_rtcc_coda/ and runs each via the
+rtcc_coda_topk arch. As of 2026-05-24 this directory holds the 16-cell K x overlap
+ablation; once a winner is picked, gen_winner_configs.py adds B4_<winner>.yaml plus
+two seed variants, and a subsequent invocation will pick those up (already-complete
+runs are skipped via DB lookup).
 
-Logs for each run are written to runs/paper_576/logs/<label>.log.
-Ctrl-C cleanly terminates all child processes.
+Usage:
+    python scripts/orchestrate_paper.py             # 1 slot (RTX 3090 is bandwidth-saturated)
+    python scripts/orchestrate_paper.py --slots 2   # 2 concurrent slots (not recommended)
+    python scripts/orchestrate_paper.py --dry-run   # print queue, don't launch
+
+Logs for each run are written to runs/paper_1024_rtcc_coda/logs/<label>.log.
+Ctrl-C terminates child processes. NOTE on Windows: subprocess.terminate() is a
+hard kill (TerminateProcess), so an in-flight cell loses progress since its last
+checkpoint. Plan around checkpoint_every (currently 1000 steps).
 """
 import argparse
+import re
 import signal
 import sqlite3
 import subprocess
@@ -23,27 +32,38 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 DB_PATH = PROJECT_ROOT / "db" / "rtcc_experiments.db"
-LOG_DIR = PROJECT_ROOT / "runs" / "paper_576" / "logs"
+CONFIG_DIR = PROJECT_ROOT / "configs" / "paper_1024_rtcc_coda"
+LOG_DIR = PROJECT_ROOT / "runs" / "paper_1024_rtcc_coda" / "logs"
+ARCH = "rtcc_coda_topk"
 
-# Run queue in phase order (RTCC_Sweep_Plan.md)
-QUEUE = [
-    # Phase 1 — anchors
-    ("dense_ffn",        "configs/paper_576/B1_dense_ffn.yaml",         "B1_dense_ffn"),
-    ("rtcc",             "configs/paper_576/S7_rtcc_60pct.yaml",         "S7_rtcc_60pct"),
-    # Phase 2 — baselines
-    ("standard_moe",     "configs/paper_576/B2_standard_moe.yaml",       "B2_standard_moe"),
-    ("slicemoe_flat",    "configs/paper_576/B3_slicemoe_flat.yaml",      "B3_slicemoe_flat"),
-    ("flat_grid_overlap","configs/paper_576/B4_flat_grid_overlap.yaml",  "B4_flat_grid_overlap"),
-    # Phase 3 — sweep
-    ("rtcc",             "configs/paper_576/S1_rtcc_11pct.yaml",         "S1_rtcc_11pct"),
-    ("rtcc",             "configs/paper_576/S2_rtcc_25pct_1cell.yaml",   "S2_rtcc_25pct_1cell"),
-    ("rtcc",             "configs/paper_576/S3_rtcc_25pct_2cell.yaml",   "S3_rtcc_25pct_2cell"),
-    ("rtcc",             "configs/paper_576/S4_rtcc_36pct_1cell.yaml",   "S4_rtcc_36pct_1cell"),
-    ("rtcc",             "configs/paper_576/S5_rtcc_36pct_2cell.yaml",   "S5_rtcc_36pct_2cell"),
-    ("rtcc",             "configs/paper_576/S6_rtcc_51pct.yaml",         "S6_rtcc_51pct"),
-    # Phase 4 — scaling run (run after d=576 sweep; update geometry to match winner)
-    ("rtcc",             "configs/paper_1024/S7_rtcc_60pct.yaml",        "1024_S7_rtcc_60pct"),
-]
+
+def _cell_sort_key(p: Path):
+    """Sort K<n>_O<m> filenames numerically by n then m so K2 comes before K16.
+    B4 prefix and seed suffix order is preserved within their groups.
+    """
+    name = p.stem
+    m = re.match(r'^(B4_)?K(\d+)_O(\d+)(?:_seed(\d+))?$', name)
+    if not m:
+        return (1, 99, 99, 0, name)
+    is_b4   = 1 if m.group(1) else 0
+    k       = int(m.group(2))
+    overlap = int(m.group(3))
+    seed    = int(m.group(4)) if m.group(4) else 0
+    return (is_b4, k, overlap, seed, name)
+
+
+def _build_queue() -> list[tuple[str, str, str]]:
+    """(arch, config_path, label) for every YAML under CONFIG_DIR."""
+    yamls = sorted(CONFIG_DIR.glob("*.yaml"), key=_cell_sort_key)
+    queue = []
+    for p in yamls:
+        rel = p.relative_to(PROJECT_ROOT).as_posix()
+        label = p.stem
+        queue.append((ARCH, rel, label))
+    return queue
+
+
+QUEUE = _build_queue()
 
 
 def now() -> str:
@@ -90,8 +110,10 @@ def format_elapsed(seconds: float) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--slots", type=int, default=2,
-                        help="Number of concurrent training runs (default 2)")
+    parser.add_argument("--slots", type=int, default=1,
+                        help="Number of concurrent training runs (default 1; RTX 3090 is "
+                             "bandwidth-saturated by one RTCC run, so concurrent slots "
+                             "do not add aggregate throughput)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print queue without launching anything")
     args = parser.parse_args()

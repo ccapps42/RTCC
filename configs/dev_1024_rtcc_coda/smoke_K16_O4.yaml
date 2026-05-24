@@ -1,0 +1,39 @@
+# Smoke test at the HEAVIEST cell of the ablation grid: K=16 of 64 experts,
+# overlap=4 (patch=12x12, 144 dims), expert_hidden=56.
+# Purpose: validate VRAM headroom and throughput at the upper bound of the
+# K x overlap sweep before launching all 16 cells.
+#
+# 50 steps x 4 batch x 8 grad_accum x 1024 seq = 1,638,400 tokens
+# Expected wall clock: ~50s training (no eval at step 50)
+#
+# Launch:
+#   python scripts/launch_run.py --arch rtcc_coda_topk \
+#       --config configs/dev_1024_rtcc_coda/smoke_K16_O4.yaml
+model_dim: 1024
+n_heads_prelude: 16
+n_heads_recurrent: 16
+n_heads_coda: 16
+mla_latent_dim: 256
+max_seq_len: 1024
+prelude_layers: 6
+coda_layers: 1
+max_loop_iters: 6
+total_steps: 50
+warmup_steps: 5
+lr_max: 3.0e-4
+lr_min: 3.0e-5
+batch_size: 4
+grad_accum_steps: 8
+seed: 42
+checkpoint_every: 50
+keep_last_n_checkpoints: 1
+eval_every: 1000   # >total_steps so no eval; this is a VRAM/throughput probe
+hardware: rtx3090
+run_name: dev_1024_rtcc_coda/smoke_K16_O4
+# Toroid coda (matches K16_O4 ablation cell — heaviest geometry)
+up_dim: 4096
+grid_side: 64
+patch_size: 12
+stride: 8
+top_k: 16
+moe_aux_loss_coef: 0.01

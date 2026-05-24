@@ -41,6 +41,11 @@ ARCH_MAP = {
         "architectures/05_rtcc/config.py", "RTCCConfig",
         None, None,
     ),
+    "rtcc_coda_topk": (
+        "architectures/06_rtcc_coda_topk/model.py", "TopKToroidCodaModel",
+        "architectures/06_rtcc_coda_topk/config.py", "TopKToroidCodaConfig",
+        "architectures/06_rtcc_coda_topk/trainer.py", "TopKToroidTrainer",
+    ),
 }
 
 

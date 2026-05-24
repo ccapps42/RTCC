@@ -92,7 +92,10 @@ def launch(arch: str, config: str, label: str) -> subprocess.Popen:
     log_path = LOG_DIR / f"{label}.log"
     log_file = open(log_path, "w")
     proc = subprocess.Popen(
-        [sys.executable, "scripts/launch_run.py", "--arch", arch, "--config", config],
+        # -u forces unbuffered stdout/stderr so Get-Content -Wait on the log
+        # file shows step prints in real time (Python buffers when stdout is
+        # not a TTY, which would otherwise delay log writes by minutes).
+        [sys.executable, "-u", "scripts/launch_run.py", "--arch", arch, "--config", config],
         cwd=str(PROJECT_ROOT),
         stdout=log_file,
         stderr=log_file,

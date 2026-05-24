@@ -12,7 +12,12 @@ Usage:
     python scripts/orchestrate_paper.py --slots 2   # 2 concurrent slots (not recommended)
     python scripts/orchestrate_paper.py --dry-run   # print queue, don't launch
 
-Logs for each run are written to runs/paper_1024_rtcc_coda/logs/<label>.log.
+Child stdout/stderr inherit the parent terminal — step prints land directly in
+the orchestrator's window in real time (matches CART's UX). To archive the
+full sweep transcript to a file, tee from PowerShell:
+
+    python scripts/orchestrate_paper.py 2>&1 | Tee-Object -FilePath sweep.log
+
 Ctrl-C terminates child processes. NOTE on Windows: subprocess.terminate() is a
 hard kill (TerminateProcess), so an in-flight cell loses progress since its last
 checkpoint. Plan around checkpoint_every (currently 1000 steps).
@@ -33,7 +38,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 DB_PATH = PROJECT_ROOT / "db" / "rtcc_experiments.db"
 CONFIG_DIR = PROJECT_ROOT / "configs" / "paper_1024_rtcc_coda"
-LOG_DIR = PROJECT_ROOT / "runs" / "paper_1024_rtcc_coda" / "logs"
 ARCH = "rtcc_coda_topk"
 
 
@@ -88,20 +92,13 @@ def is_complete(run_name: str) -> bool:
 
 
 def launch(arch: str, config: str, label: str) -> subprocess.Popen:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"{label}.log"
-    log_file = open(log_path, "w")
+    # Inherit parent stdout/stderr so child prints land in the orchestrator's
+    # terminal in real time (matches CART). At --slots > 1 this would interleave;
+    # this project runs --slots 1 by design.
     proc = subprocess.Popen(
-        # -u forces unbuffered stdout/stderr so Get-Content -Wait on the log
-        # file shows step prints in real time (Python buffers when stdout is
-        # not a TTY, which would otherwise delay log writes by minutes).
         [sys.executable, "-u", "scripts/launch_run.py", "--arch", arch, "--config", config],
         cwd=str(PROJECT_ROOT),
-        stdout=log_file,
-        stderr=log_file,
     )
-    proc._log_file = log_file
-    proc._log_path = log_path
     return proc
 
 
@@ -142,7 +139,6 @@ def main():
     print(f"Slots: {args.slots}  |  Runs queued: {len(queue)}  |  Skipped (complete): {len(skipped)}")
     if skipped:
         print(f"Already complete: {', '.join(skipped)}")
-    print(f"Logs: {LOG_DIR}")
     print(f"{'='*60}\n")
 
     if args.dry_run:
@@ -160,7 +156,6 @@ def main():
         print(f"\n[{now()}] Interrupted — terminating {len(running)} running process(es)...")
         for proc, label, config, t0 in running:
             proc.terminate()
-            proc._log_file.close()
             print(f"  Terminated: {label}")
         sys.exit(1)
     signal.signal(signal.SIGINT, _sigint)
@@ -173,13 +168,11 @@ def main():
             if rc is None:
                 still_running.append((proc, label, config, t0))
             else:
-                proc._log_file.close()
                 elapsed = time.time() - t0
                 success = (rc == 0)
                 completed.append((label, elapsed, success))
                 status = "DONE" if success else f"FAILED (exit {rc})"
-                print(f"[{now()}] {label}: {status} in {format_elapsed(elapsed)}"
-                      f"  →  log: {proc._log_path.name}")
+                print(f"[{now()}] {label}: {status} in {format_elapsed(elapsed)}")
         running = still_running
 
         # Fill empty slots from queue
@@ -188,8 +181,7 @@ def main():
             proc = launch(arch, config, label)
             running.append((proc, label, config, time.time()))
             print(f"[{now()}] {label}: launched (PID {proc.pid})"
-                  f"  [{len(running)}/{args.slots} slots]"
-                  f"  →  {LOG_DIR.name}/{label}.log")
+                  f"  [{len(running)}/{args.slots} slots]")
 
         # Status line every 5 minutes
         if running:

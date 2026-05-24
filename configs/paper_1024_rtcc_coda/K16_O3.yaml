@@ -18,6 +18,7 @@ lr_min: 3.0e-5
 batch_size: 4
 grad_accum_steps: 8
 seed: 42
+eval_every: 2500
 hardware: rtx3090
 run_name: paper_1024_rtcc_coda/K16_O3
 # Toroid coda
